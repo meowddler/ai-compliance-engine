@@ -1,0 +1,121 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Scans - Compliance Engine</title>
+<link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+<div id="nav-placeholder"></div>
+<main>
+  <h2>Scans</h2>
+  <div class="panel" style="max-width:420px">
+    <h2 style="margin-top:0;font-size:16px">Upload New Log File</h2>
+    <input type="file" id="fileInput" accept=".csv">
+    <button onclick="uploadFile()">Run Scan</button>
+    <button class="action-btn danger" onclick="resetScans()" style="margin-top:10px">🗑 Clear Scan History</button>
+    <p id="upload-status" style="font-size:13px;color:var(--text-muted)"></p>
+  </div>
+  <div class="panel">
+    <h2 style="margin-top:0">Scan History <span style="font-size:12px;color:var(--text-muted);font-weight:400">(click a row for details)</span></h2>
+    <input type="text" id="scan-search" placeholder="Search by filename..." oninput="filterScans()">
+    <table>
+      <thead><tr><th>ID</th><th>Filename</th><th>Rows Scanned</th><th>Time</th></tr></thead>
+      <tbody id="scans-body"></tbody>
+    </table>
+  </div>
+  <div class="panel" id="scan-detail-panel" style="display:none">
+    <h2 style="margin-top:0" id="scan-detail-title">Findings</h2>
+    <table>
+      <thead><tr><th>Server</th><th>Rule</th><th>Severity</th><th>Anomaly?</th></tr></thead>
+      <tbody id="scan-detail-body"></tbody>
+    </table>
+  </div>
+</main>
+<script src="js/auth.js"></script>
+<script>
+requireAuth();
+renderNav("scans.html");
+
+let allScans = [];
+let allViolations = [];
+
+async function loadScans() {
+  const res = await apiFetch("/scans");
+  allScans = await res.json();
+  renderScans(allScans);
+  const vRes = await apiFetch("/violations");
+  allViolations = await vRes.json();
+}
+
+function renderScans(list) {
+  const tbody = document.getElementById("scans-body");
+  if (list.length === 0) {
+    tbody.innerHTML = `<tr><td colspan="4" class="empty-state">No scans yet — upload a CSV above.</td></tr>`;
+    return;
+  }
+  tbody.innerHTML = "";
+  list.slice().reverse().forEach(s => {
+    const row = document.createElement("tr");
+    row.style.cursor = "pointer";
+    row.innerHTML = `<td>${s.id}</td><td>${s.filename}</td><td>${s.rows_scanned}</td><td>${new Date(s.created_at).toLocaleString()}</td>`;
+    row.onclick = () => showScanDetail(s);
+    tbody.appendChild(row);
+  });
+}
+
+function filterScans() {
+  const q = document.getElementById("scan-search").value.toLowerCase();
+  renderScans(allScans.filter(s => s.filename.toLowerCase().includes(q)));
+}
+
+function showScanDetail(scan) {
+  const panel = document.getElementById("scan-detail-panel");
+  document.getElementById("scan-detail-title").innerText = `Findings for Scan #${scan.id} — ${scan.filename}`;
+  const tbody = document.getElementById("scan-detail-body");
+  const findings = allViolations.filter(v => v.scan_id === scan.id);
+
+  if (findings.length === 0) {
+    tbody.innerHTML = `<tr><td colspan="4" class="empty-state">No violations — clean scan!</td></tr>`;
+  } else {
+    tbody.innerHTML = "";
+    findings.forEach(v => {
+      const row = document.createElement("tr");
+      row.innerHTML = `<td>${v.server_id}</td><td>${v.rule_name}</td><td class="${v.severity}">${v.severity}</td><td>${v.is_anomaly ? "⚠️ Yes" : "No"}</td>`;
+      tbody.appendChild(row);
+    });
+  }
+  panel.style.display = "block";
+  panel.scrollIntoView({ behavior: "smooth" });
+}
+
+async function uploadFile() {
+  const fileInput = document.getElementById("fileInput");
+  const status = document.getElementById("upload-status");
+  if (!fileInput.files.length) { status.innerText = "Choose a CSV file first."; return; }
+  const formData = new FormData();
+  formData.append("file", fileInput.files[0]);
+  status.innerText = "Scanning...";
+  const res = await apiFetch("/upload-logs", { method: "POST", body: formData });
+  if (res.ok) {
+    const data = await res.json();
+    status.innerText = `Scan complete — ${data.rows_scanned} rows scanned.`;
+    loadScans();
+  } else { status.innerText = "Scan failed."; }
+}
+
+async function resetScans() {
+  if (!confirm("This deletes ALL scans and violations permanently. Continue?")) return;
+  const res = await apiFetch("/scans/reset", { method: "DELETE" });
+  const status = document.getElementById("upload-status");
+  if (res.ok) {
+    status.innerText = "Scan history cleared.";
+    document.getElementById("scan-detail-panel").style.display = "none";
+    loadScans();
+  } else if (res.status === 403) { status.innerText = "Not authorized — Admin only."; }
+  else { status.innerText = "Failed to reset."; }
+}
+loadScans();
+</script>
+</body>
+</html>

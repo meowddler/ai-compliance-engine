@@ -1,0 +1,56 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Audit Log - Compliance Engine</title>
+<link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+<div id="nav-placeholder"></div>
+<main>
+  <h2>Audit Log</h2>
+  <div class="panel">
+    <input type="text" id="audit-search" placeholder="Search by user or action..." oninput="filterAudit()">
+    <table>
+      <thead><tr><th>User</th><th>Action</th><th>Details</th><th>Time</th></tr></thead>
+      <tbody id="audit-body"></tbody>
+    </table>
+  </div>
+</main>
+<script src="js/auth.js"></script>
+<script>
+requireAuth();
+renderNav("audit.html");
+let allAudit = [];
+
+async function loadAudit() {
+  const res = await apiFetch("/audit-log");
+  const tbody = document.getElementById("audit-body");
+  if (res.status === 403) {
+    tbody.innerHTML = `<tr><td colspan="4">You don't have permission to view this.</td></tr>`;
+    document.getElementById("audit-search").style.display = "none";
+    return;
+  }
+  allAudit = await res.json();
+  renderAudit(allAudit);
+}
+
+function renderAudit(list) {
+  const tbody = document.getElementById("audit-body");
+  if (list.length === 0) { tbody.innerHTML = `<tr><td colspan="4" class="empty-state">No audit activity yet.</td></tr>`; return; }
+  tbody.innerHTML = "";
+  list.forEach(e => {
+    const row = document.createElement("tr");
+    row.innerHTML = `<td>${e.username}</td><td>${e.action}</td><td>${e.details}</td><td>${new Date(e.timestamp).toLocaleString()}</td>`;
+    tbody.appendChild(row);
+  });
+}
+
+function filterAudit() {
+  const q = document.getElementById("audit-search").value.toLowerCase();
+  renderAudit(allAudit.filter(a => a.username.toLowerCase().includes(q) || a.action.toLowerCase().includes(q)));
+}
+loadAudit();
+</script>
+</body>
+</html>

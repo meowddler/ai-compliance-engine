@@ -1,0 +1,93 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Rules - Compliance Engine</title>
+<link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+<div id="nav-placeholder"></div>
+<main>
+  <h2>Compliance Rules</h2>
+  <div class="panel">
+    <input type="text" id="rule-search" placeholder="Search by name, framework, or severity..." oninput="filterRules()">
+    <table>
+      <thead><tr><th>Name</th><th>Framework</th><th>Severity</th><th>Description</th><th>Active</th><th>Actions</th></tr></thead>
+      <tbody id="rules-body"></tbody>
+    </table>
+  </div>
+  <div class="panel" style="max-width:480px">
+    <h2 style="margin-top:0;font-size:16px">Create New Rule (Admin only)</h2>
+    <input type="text" id="r-name" placeholder="Rule name (e.g. weak_password_policy)">
+    <input type="text" id="r-description" placeholder="Description">
+    <input type="text" id="r-framework" placeholder="Framework (e.g. ISO 27001)">
+    <select id="r-severity"><option value="HIGH">HIGH</option><option value="MEDIUM">MEDIUM</option><option value="LOW">LOW</option></select>
+    <input type="text" id="r-remediation" placeholder="Remediation guidance">
+    <input type="text" id="r-field" placeholder="Field to check (e.g. port)">
+    <select id="r-operator"><option value="==">==</option><option value="!=">!=</option><option value=">">></option><option value="<"><</option><option value="in">in</option></select>
+    <input type="text" id="r-value" placeholder='Value (e.g. true, 80, [22,3389])'>
+    <button onclick="createRule()">Create Rule</button>
+    <p id="rule-status" style="font-size:13px;color:var(--text-muted)"></p>
+  </div>
+</main>
+<script src="js/auth.js"></script>
+<script>
+requireAuth();
+renderNav("rules.html");
+let allRules = [];
+
+async function loadRules() {
+  const res = await apiFetch("/rules");
+  allRules = await res.json();
+  renderRules(allRules);
+}
+
+function renderRules(list) {
+  const tbody = document.getElementById("rules-body");
+  if (list.length === 0) { tbody.innerHTML = `<tr><td colspan="6" class="empty-state">No matching rules.</td></tr>`; return; }
+  tbody.innerHTML = "";
+  list.forEach(r => {
+    const row = document.createElement("tr");
+    row.innerHTML = `<td>${r.name}</td><td>${r.framework}</td><td class="${r.severity}">${r.severity}</td><td>${r.description}</td><td><input type="checkbox" ${r.active ? "checked" : ""} onchange="toggleRule(${r.id}, this.checked)"></td><td><button class="action-btn danger" onclick="deleteRule(${r.id})">Delete</button></td>`;
+    tbody.appendChild(row);
+  });
+}
+
+function filterRules() {
+  const q = document.getElementById("rule-search").value.toLowerCase();
+  renderRules(allRules.filter(r => r.name.toLowerCase().includes(q) || r.framework.toLowerCase().includes(q) || r.severity.toLowerCase().includes(q)));
+}
+
+async function toggleRule(id, isActive) {
+  await apiFetch(`/rules/${id}`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ active: isActive }) });
+  loadRules();
+}
+
+async function deleteRule(id) {
+  if (!confirm("Delete this rule? This cannot be undone.")) return;
+  await apiFetch(`/rules/${id}`, { method: "DELETE" });
+  loadRules();
+}
+
+function parseValue(raw) { try { return JSON.parse(raw); } catch { return raw; } }
+
+async function createRule() {
+  const status = document.getElementById("rule-status");
+  const payload = {
+    name: document.getElementById("r-name").value,
+    description: document.getElementById("r-description").value,
+    framework: document.getElementById("r-framework").value,
+    severity: document.getElementById("r-severity").value,
+    remediation: document.getElementById("r-remediation").value,
+    condition: [{ field: document.getElementById("r-field").value, operator: document.getElementById("r-operator").value, value: parseValue(document.getElementById("r-value").value) }],
+    active: true
+  };
+  const res = await apiFetch("/rules", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
+  if (res.ok) { status.innerText = "Rule created."; loadRules(); }
+  else if (res.status === 403) { status.innerText = "Not authorized — only Admins can create rules."; }
+  else { status.innerText = "Failed to create rule."; }
+}
+loadRules();
+</script>
+</body>
+</html>

@@ -1,0 +1,104 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Dashboard - Compliance Engine</title>
+<link rel="stylesheet" href="css/style.css">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.0/chart.umd.min.js"></script>
+</head>
+<body>
+<div id="nav-placeholder"></div>
+<main>
+  <h2>Dashboard</h2>
+  <div class="cards">
+    <div class="card"><h3 id="score">0</h3><p>Compliance Score</p></div>
+    <div class="card"><h3 id="scans">0</h3><p>Total Scans</p></div>
+    <div class="card"><h3 id="violations">0</h3><p>Total Violations</p></div>
+    <div class="card"><h3 id="anomalies">0</h3><p>Anomalies Detected</p></div>
+  </div>
+  <div class="panel" style="max-width:380px">
+    <p style="font-size:12px;color:var(--text-muted);margin-top:0">Click a slice to filter findings below</p>
+    <canvas id="severityChart"></canvas>
+  </div>
+  <div class="panel">
+    <h2 style="margin-top:0">Recent Findings</h2>
+    <div id="filter-indicator"></div>
+    <table>
+      <thead><tr><th>Server</th><th>Rule</th><th>Severity</th><th>Anomaly?</th><th>Time</th></tr></thead>
+      <tbody id="findings-body"></tbody>
+    </table>
+  </div>
+</main>
+<script src="js/auth.js"></script>
+<script>
+requireAuth();
+renderNav("dashboard.html");
+
+let allRecentViolations = [];
+let activeFilter = null;
+
+function countUp(id, target) {
+  const el = document.getElementById(id);
+  let current = 0;
+  const step = Math.max(1, Math.ceil(target / 30));
+  const interval = setInterval(() => {
+    current += step;
+    if (current >= target) { current = target; clearInterval(interval); }
+    el.innerText = current;
+  }, 20);
+}
+
+function renderFindings() {
+  const tbody = document.getElementById("findings-body");
+  const list = activeFilter ? allRecentViolations.filter(v => v.severity === activeFilter) : allRecentViolations;
+
+  document.getElementById("filter-indicator").innerHTML = activeFilter
+    ? `<div class="filter-chip">Filtered: ${activeFilter} <button onclick="clearFilter()">✕</button></div>` : "";
+
+  if (list.length === 0) {
+    tbody.innerHTML = `<tr><td colspan="5" class="empty-state">No findings match this filter.</td></tr>`;
+    return;
+  }
+  tbody.innerHTML = "";
+  list.forEach(v => {
+    const row = document.createElement("tr");
+    row.innerHTML = `<td>${v.server_id}</td><td>${v.rule_name}</td><td class="${v.severity}">${v.severity}</td><td>${v.is_anomaly ? "⚠️ Yes" : "No"}</td><td>${new Date(v.created_at).toLocaleString()}</td>`;
+    tbody.appendChild(row);
+  });
+}
+
+function clearFilter() { activeFilter = null; renderFindings(); }
+
+async function loadDashboard() {
+  const res = await apiFetch("/dashboard/summary");
+  const data = await res.json();
+
+  countUp("score", data.compliance_score);
+  countUp("scans", data.total_scans);
+  countUp("violations", data.total_violations);
+  countUp("anomalies", data.anomaly_count);
+
+  allRecentViolations = data.recent_violations;
+  renderFindings();
+
+  new Chart(document.getElementById("severityChart"), {
+    type: "doughnut",
+    data: {
+      labels: ["HIGH", "MEDIUM", "LOW"],
+      datasets: [{ data: [data.severity_breakdown.HIGH, data.severity_breakdown.MEDIUM, data.severity_breakdown.LOW], backgroundColor: ["#f87171", "#fbbf24", "#34d399"], borderWidth: 0 }]
+    },
+    options: {
+      plugins: { legend: { labels: { color: "#e6e8eb" } } },
+      onClick: (evt, elements) => {
+        if (elements.length > 0) {
+          activeFilter = ["HIGH", "MEDIUM", "LOW"][elements[0].index];
+          renderFindings();
+        }
+      }
+    }
+  });
+}
+loadDashboard();
+</script>
+</body>
+</html>
