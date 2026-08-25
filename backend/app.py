@@ -141,11 +141,27 @@ def update_rule(rule_id: int, rule: RuleUpdate, db: Session = Depends(get_db), c
     if "condition" in update_data:
         update_data["condition"] = json.dumps([c.dict() if hasattr(c, "dict") else c for c in rule.condition])
 
+    # Record what actually changes, so the audit entry names the substance of
+    # the edit rather than a bare "rule updated". Silently altering detection
+    # logic is exactly the gap a compliance audit trail must close.
+    changes = []
     for key, value in update_data.items():
-        setattr(db_rule, key, value)
+        old_value = getattr(db_rule, key)
+        if old_value != value:
+            changes.append(f"{key}: {old_value!r} -> {value!r}")
+            setattr(db_rule, key, value)
 
     db.commit()
     db.refresh(db_rule)
+
+    if changes:
+        log_action(
+            db,
+            current_user.username,
+            "rule_updated",
+            f"Updated rule '{db_rule.name}' (id={rule_id}): " + "; ".join(changes),
+        )
+
     return db_rule
 
 @app.get("/dashboard/summary")
