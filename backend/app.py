@@ -16,14 +16,16 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from backend.utils.report_generator import generate_compliance_report
 from backend.utils.audit import log_action
-
+from backend.config import CORS_ORIGINS
+from fastapi.staticfiles import StaticFiles
 app = FastAPI()
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=CORS_ORIGINS,
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["GET", "POST", "PUT", "DELETE"],
+    allow_headers=["Authorization", "Content-Type"],
 )
 
 @app.get("/")
@@ -79,25 +81,38 @@ async def upload_logs(file: UploadFile = File(...), db: Session = Depends(get_db
                 anomaly_score=anomaly_score
             ))
 
+        # Evaluation errors must be recorded, never dropped. A control that
+        # could not run is surfaced as an EVALUATION_ERROR row so it is visible
+        # in findings rather than silently treated as a clean pass.
+        for e in result.get("errors", []):
+            db.add(Violation(
+                scan_id=scan.id,
+                server_id=server,
+                rule_name=e["rule"],
+                severity="EVALUATION_ERROR",
+                message=f"Could not evaluate: {e['reason']}",
+                is_anomaly=is_anomaly,
+                anomaly_score=anomaly_score
+            ))
+
     db.commit()
     log_action(db, current_user.username, "scan_run", f"Scanned {file.filename} ({len(df)} rows)")
     return {"scan_id": scan.id, "filename": file.filename, "rows_scanned": len(df), "findings": rule_results}
 
 
 @app.get("/violations")
-def get_violations(db: Session = Depends(get_db)):
+def get_violations(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
     return db.query(Violation).all()
 
 
 @app.get("/scans")
-def get_scans(db: Session = Depends(get_db)):
+def get_scans(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
     return db.query(Scan).all()
 
 
 @app.get("/rules")
-def get_rules(db: Session = Depends(get_db)):
+def get_rules(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
     return db.query(Rule).all()
-
 
 @app.post("/rules")
 def create_rule(rule: RuleCreate, db: Session = Depends(get_db), current_user: User = Depends(require_role(["Admin"]))):
@@ -134,7 +149,7 @@ def update_rule(rule_id: int, rule: RuleUpdate, db: Session = Depends(get_db), c
     return db_rule
 
 @app.get("/dashboard/summary")
-def dashboard_summary(db: Session = Depends(get_db)):
+def dashboard_summary(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
     total_scans = db.query(Scan).count()
     total_violations = db.query(Violation).count()
 
@@ -143,11 +158,6 @@ def dashboard_summary(db: Session = Depends(get_db)):
     low = db.query(Violation).filter(Violation.severity == "LOW").count()
 
     anomalies = db.query(Violation).filter(Violation.is_anomaly == True).count()
-
-    # Basic compliance score: fewer violations relative to scans = better score
-    # Simple formula for MVP — weight HIGH violations most heavily
-    risk_points = (high * 3) + (medium * 2) + (low * 1)
-    compliance_score = max(0, 100 - risk_points) if total_scans > 0 else 100
 
     # Recent violations for a "latest findings" table
     recent = (
@@ -158,7 +168,6 @@ def dashboard_summary(db: Session = Depends(get_db)):
     )
 
     return {
-        "compliance_score": compliance_score,
         "total_scans": total_scans,
         "total_violations": total_violations,
         "severity_breakdown": {"HIGH": high, "MEDIUM": medium, "LOW": low},
@@ -177,7 +186,7 @@ def dashboard_summary(db: Session = Depends(get_db)):
 
 @app.post("/reports/generate")
 def generate_report(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
-    summary = dashboard_summary(db)  # reuse the same logic you already built
+    summary = dashboard_summary(db, current_user)  # reuse the same logic you already built
     pdf_buffer = generate_compliance_report(summary)
 
     log_action(db, current_user.username, "report_generated", "Generated compliance PDF report")
@@ -213,3 +222,7 @@ def reset_scans(db: Session = Depends(get_db), current_user: User = Depends(requ
     db.commit()
     log_action(db, current_user.username, "scans_reset", "Cleared all scan history and violations")
     return {"message": "All scans and violations cleared"}
+
+
+# Serve the frontend. Must be last — it catches all routes not claimed above.
+app.mount("/", StaticFiles(directory="frontend", html=True), name="frontend")

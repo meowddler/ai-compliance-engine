@@ -21,7 +21,6 @@ def generate_compliance_report(summary_data):
     elements.append(Paragraph("Executive Summary", styles["Heading2"]))
     summary_table_data = [
         ["Metric", "Value"],
-        ["Compliance Score", f"{summary_data['compliance_score']} / 100"],
         ["Total Scans", str(summary_data["total_scans"])],
         ["Total Violations", str(summary_data["total_violations"])],
         ["Anomalies Detected", str(summary_data["anomaly_count"])],

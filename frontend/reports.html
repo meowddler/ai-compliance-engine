@@ -14,10 +14,11 @@
     <button type="button" onclick="generateReport()">Generate Report</button>
     <p id="report-status" style="font-size:13px;color:var(--text-muted)"></p>
   </div>
-  <div class="panel" id="preview-panel" style="display:none">
-    <h2 style="margin-top:0">Preview</h2>
-    <iframe id="report-frame" style="width:100%;height:600px;border:1px solid var(--border);border-radius:8px;background:white"></iframe>
-    <button type="button" onclick="downloadReport()" style="margin-top:14px">⬇ Download PDF</button>
+    <div class="panel" id="preview-panel" style="display:none">
+    <h2 style="margin-top:0">Report Ready</h2>
+    <p style="color:var(--text-muted);font-size:14px">Your compliance report has been generated.</p>
+    <button type="button" onclick="openReport()">↗ Open in New Tab</button>
+    <button type="button" onclick="downloadReport()" style="margin-top:10px">⬇ Download PDF</button>
   </div>
 </main>
 <script src="js/auth.js"></script>
@@ -36,21 +37,24 @@ async function generateReport() {
       return;
     }
     const blob = await res.blob();
-    const pdfBlob = blob.type === "application/pdf"
+    currentReportBlob = blob.type === "application/pdf"
       ? blob
       : new Blob([blob], { type: "application/pdf" });
 
-    const frame = document.getElementById("report-frame");
-    if (frame.src) window.URL.revokeObjectURL(frame.src);
-
-    currentReportBlob = pdfBlob;
-    frame.src = window.URL.createObjectURL(pdfBlob);
     document.getElementById("preview-panel").style.display = "block";
-    status.innerText = "Report ready — preview below.";
+    status.innerText = "Report ready.";
   } catch (err) {
     console.error("Report generation error:", err);
     status.innerText = "Something went wrong generating the report.";
   }
+}
+
+function openReport() {
+  if (!currentReportBlob) return;
+  const url = window.URL.createObjectURL(currentReportBlob);
+  window.open(url, "_blank");
+  // Don't revoke immediately — the new tab needs the URL to load first.
+  setTimeout(() => window.URL.revokeObjectURL(url), 10000);
 }
 
 function downloadReport() {
