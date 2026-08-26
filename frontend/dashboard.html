@@ -61,7 +61,22 @@ function renderFindings() {
   tbody.innerHTML = "";
   list.forEach(v => {
     const row = document.createElement("tr");
-    row.innerHTML = `<td>${v.server_id}</td><td>${v.rule_name}</td><td class="${v.severity}">${v.severity}</td><td>${v.is_anomaly ? "⚠️ Yes" : "No"}</td><td>${new Date(v.created_at).toLocaleString()}</td>`;
+    // textContent, not innerHTML — uploaded values (server_id, rule_name) are
+    // attacker-controllable and must never be parsed as HTML. Same stored-XSS
+    // fix as the scans and rules pages.
+    const cells = [
+      { text: v.server_id },
+      { text: v.rule_name },
+      { text: v.severity, cls: v.severity },
+      { text: v.is_anomaly ? "⚠️ Yes" : "No" },
+      { text: new Date(v.created_at).toLocaleString() },
+    ];
+    cells.forEach(c => {
+      const td = document.createElement("td");
+      td.textContent = c.text ?? "";
+      if (c.cls) td.className = c.cls;
+      row.appendChild(td);
+    });
     tbody.appendChild(row);
   });
 }
