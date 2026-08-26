@@ -1,4 +1,4 @@
-from fastapi import FastAPI, UploadFile, File, Depends
+from fastapi import FastAPI, UploadFile, File, Depends, HTTPException
 from fastapi.security import OAuth2PasswordRequestForm
 from sqlalchemy.orm import Session
 import pandas as pd
@@ -37,11 +37,13 @@ def read_root():
 def login(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_db)):
     user = db.query(User).filter(User.username == form_data.username).first()
     if not user or not verify_password(form_data.password, user.hashed_password):
-        return {"error": "Invalid username or password"}
+        # 401, not a 200 with an error field. A failed login is not a success,
+        # and the same generic message for both cases avoids revealing whether
+        # a username exists (prevents user enumeration).
+        raise HTTPException(status_code=401, detail="Invalid username or password")
 
     token = create_access_token({"sub": user.username, "role": user.role})
     return {"access_token": token, "token_type": "bearer", "role": user.role}
-
 
 @app.post("/upload-logs")
 async def upload_logs(file: UploadFile = File(...), db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
