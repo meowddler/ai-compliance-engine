@@ -45,6 +45,33 @@ def login(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depend
     token = create_access_token({"sub": user.username, "role": user.role})
     return {"access_token": token, "token_type": "bearer", "role": user.role}
 
+def build_anomaly_map(df):
+    """Map server_id -> anomaly info, tolerant of duplicate server_ids.
+
+    A CSV can legitimately contain several rows for the same server. Using
+    set_index().to_dict("index") crashes when server_id repeats
+    (ValueError: index must be unique), and keeping only one row would silently
+    discard data. Instead we keep the most anomalous row per server — lowest
+    anomaly_score is most anomalous for IsolationForest — so a server flagged
+    anomalous in ANY row is treated as anomalous rather than being let off by a
+    later clean-looking duplicate.
+    """
+    if "server_id" not in df.columns:
+        return {}
+
+    anomaly_map = {}
+    for _, r in df.iterrows():
+        sid = r["server_id"]
+        score = r.get("anomaly_score")
+        prev = anomaly_map.get(sid)
+        if prev is None or (score is not None and score < prev["anomaly_score"]):
+            anomaly_map[sid] = {
+                "is_anomaly": bool(r.get("is_anomaly", False)),
+                "anomaly_score": score if score is not None else 0.0,
+            }
+    return anomaly_map
+
+
 @app.post("/upload-logs")
 async def upload_logs(file: UploadFile = File(...), db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
     contents = await file.read()
@@ -59,7 +86,7 @@ async def upload_logs(file: UploadFile = File(...), db: Session = Depends(get_db
     rule_results = evaluate_dataframe(df, active_rules)
 
     df_with_anomalies = detect_anomalies(df)
-    anomaly_map = df_with_anomalies.set_index("server_id")[["is_anomaly", "anomaly_score"]].to_dict("index")
+    anomaly_map = build_anomaly_map(df_with_anomalies)
 
     for result in rule_results:
         server = result["server_id"]
