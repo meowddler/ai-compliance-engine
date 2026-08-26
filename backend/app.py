@@ -74,60 +74,85 @@ def build_anomaly_map(df):
 
 @app.post("/upload-logs")
 async def upload_logs(file: UploadFile = File(...), db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    # --- Validate input up front, before creating anything in the DB. ---
     contents = await file.read()
-    df = pd.read_csv(io.BytesIO(contents))
+    if not contents:
+        raise HTTPException(status_code=400, detail="Uploaded file is empty.")
 
-    scan = Scan(filename=file.filename, rows_scanned=len(df))
-    db.add(scan)
-    db.commit()
-    db.refresh(scan)
+    try:
+        df = pd.read_csv(io.BytesIO(contents))
+    except Exception:
+        raise HTTPException(status_code=400, detail="Could not parse file as CSV.")
 
-    active_rules = db.query(Rule).filter(Rule.active == True).all()
-    rule_results = evaluate_dataframe(df, active_rules)
+    if df.empty:
+        raise HTTPException(status_code=400, detail="CSV contains no rows.")
+    if "server_id" not in df.columns:
+        raise HTTPException(status_code=400, detail="CSV must include a 'server_id' column.")
 
-    df_with_anomalies = detect_anomalies(df)
-    anomaly_map = build_anomaly_map(df_with_anomalies)
+    # --- Do ALL processing before touching the database. ---
+    # If any of this fails, we haven't created a scan record, so no ghost scan
+    # can be left behind.
+    try:
+        active_rules = db.query(Rule).filter(Rule.active == True).all()
+        rule_results = evaluate_dataframe(df, active_rules)
 
-    for result in rule_results:
-        server = result["server_id"]
-        is_anomaly = False
-        anomaly_score = None
+        df_with_anomalies = detect_anomalies(df)
+        anomaly_map = build_anomaly_map(df_with_anomalies)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Scan processing failed: {exc}")
 
-        if server in anomaly_map:
-            is_anomaly = bool(anomaly_map[server]["is_anomaly"])
-            anomaly_score = str(anomaly_map[server]["anomaly_score"])
-            result["is_anomaly"] = is_anomaly
-            result["anomaly_score"] = anomaly_map[server]["anomaly_score"]
+    # --- Persist scan + all violations as one atomic unit. ---
+    # The scan row and its violations are added to the same transaction and
+    # committed together at the very end. If the commit fails, rollback leaves
+    # the database exactly as it was — all-or-nothing.
+    try:
+        scan = Scan(filename=file.filename, rows_scanned=len(df))
+        db.add(scan)
+        db.flush()  # assigns scan.id without committing yet
 
-        for v in result["violations"]:
-            db.add(Violation(
-                scan_id=scan.id,
-                server_id=server,
-                rule_name=v["rule"],
-                severity=v["severity"],
-                message=v["message"],
-                is_anomaly=is_anomaly,
-                anomaly_score=anomaly_score
-            ))
+        for result in rule_results:
+            server = result["server_id"]
+            is_anomaly = False
+            anomaly_score = None
 
-        # Evaluation errors must be recorded, never dropped. A control that
-        # could not run is surfaced as an EVALUATION_ERROR row so it is visible
-        # in findings rather than silently treated as a clean pass.
-        for e in result.get("errors", []):
-            db.add(Violation(
-                scan_id=scan.id,
-                server_id=server,
-                rule_name=e["rule"],
-                severity="EVALUATION_ERROR",
-                message=f"Could not evaluate: {e['reason']}",
-                is_anomaly=is_anomaly,
-                anomaly_score=anomaly_score
-            ))
+            if server in anomaly_map:
+                is_anomaly = bool(anomaly_map[server]["is_anomaly"])
+                anomaly_score = str(anomaly_map[server]["anomaly_score"])
+                result["is_anomaly"] = is_anomaly
+                result["anomaly_score"] = anomaly_map[server]["anomaly_score"]
 
-    db.commit()
+            for v in result["violations"]:
+                db.add(Violation(
+                    scan_id=scan.id,
+                    server_id=server,
+                    rule_name=v["rule"],
+                    severity=v["severity"],
+                    message=v["message"],
+                    is_anomaly=is_anomaly,
+                    anomaly_score=anomaly_score
+                ))
+
+            # Evaluation errors must be recorded, never dropped. A control that
+            # could not run is surfaced as an EVALUATION_ERROR row so it is
+            # visible in findings rather than silently treated as a clean pass.
+            for e in result.get("errors", []):
+                db.add(Violation(
+                    scan_id=scan.id,
+                    server_id=server,
+                    rule_name=e["rule"],
+                    severity="EVALUATION_ERROR",
+                    message=f"Could not evaluate: {e['reason']}",
+                    is_anomaly=is_anomaly,
+                    anomaly_score=anomaly_score
+                ))
+
+        db.commit()
+    except Exception as exc:
+        db.rollback()  # no partial scan is left behind
+        raise HTTPException(status_code=500, detail=f"Failed to save scan: {exc}")
+
     log_action(db, current_user.username, "scan_run", f"Scanned {file.filename} ({len(df)} rows)")
     return {"scan_id": scan.id, "filename": file.filename, "rows_scanned": len(df), "findings": rule_results}
-
 
 @app.get("/violations")
 def get_violations(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
