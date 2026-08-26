@@ -12,9 +12,8 @@ def test_root_endpoint():
 
 def test_login_fails_with_bad_credentials():
     response = client.post("/auth/login", data={"username": "nope", "password": "wrong"})
-    assert response.status_code == 200  # your endpoint returns 200 with an error field
-    assert "error" in response.json()
-
+    assert response.status_code == 401  # failed login must be 401, not a 200 with an error field
+    assert "access_token" not in response.json()
 
 def test_upload_logs_requires_auth():
     response = client.post("/upload-logs")

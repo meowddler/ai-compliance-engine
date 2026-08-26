@@ -51,9 +51,10 @@ def test_evaluate_row_flags_violation():
             {"field": "mfa_enabled", "operator": "==", "value": False}
         ]
     )
-    violations = evaluate_row(row, [rule])
-    assert len(violations) == 1
-    assert violations[0]["severity"] == "HIGH"
+    result = evaluate_row(row, [rule])
+    assert len(result["violations"]) == 1
+    assert result["errors"] == []
+    assert result["violations"][0]["severity"] == "HIGH"
 
 
 def test_evaluate_row_no_violation_when_clean():
@@ -67,5 +68,22 @@ def test_evaluate_row_no_violation_when_clean():
             {"field": "mfa_enabled", "operator": "==", "value": False}
         ]
     )
-    violations = evaluate_row(row, [rule])
-    assert len(violations) == 0
+    result = evaluate_row(row, [rule])
+    assert len(result["violations"]) == 0
+    assert result["errors"] == []
+
+
+def test_evaluate_row_surfaces_error_on_missing_field():
+    """A rule referencing a field absent from the data must surface an error,
+    never silently pass. This is the core S0-03 guarantee."""
+    row = {"server_id": "srv-x", "port": 443}
+    rule = FakeRule(
+        name="needs_encryption",
+        severity="HIGH",
+        description="Encryption must be enabled",
+        condition=[{"field": "encryption_enabled", "operator": "==", "value": True}]
+    )
+    result = evaluate_row(row, [rule])
+    assert len(result["violations"]) == 0      # did NOT fire
+    assert len(result["errors"]) == 1          # but DID surface an error
+    assert "encryption_enabled" in result["errors"][0]["reason"]
