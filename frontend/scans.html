@@ -40,6 +40,16 @@ renderNav("scans.html");
 let allScans = [];
 let allViolations = [];
 
+// Small helper: make a <td> whose content is set as TEXT, never HTML.
+// This is the fix for stored XSS — uploaded values like server_id, rule_name
+// and filename are attacker-controllable, so they must never be parsed as HTML.
+function textCell(value, className) {
+  const td = document.createElement("td");
+  td.textContent = value ?? "";
+  if (className) td.className = className;
+  return td;
+}
+
 async function loadScans() {
   const res = await apiFetch("/scans");
   allScans = await res.json();
@@ -50,15 +60,22 @@ async function loadScans() {
 
 function renderScans(list) {
   const tbody = document.getElementById("scans-body");
+  tbody.innerHTML = "";
   if (list.length === 0) {
-    tbody.innerHTML = `<tr><td colspan="4" class="empty-state">No scans yet — upload a CSV above.</td></tr>`;
+    const tr = document.createElement("tr");
+    const td = document.createElement("td");
+    td.colSpan = 4; td.className = "empty-state";
+    td.textContent = "No scans yet — upload a CSV above.";
+    tr.appendChild(td); tbody.appendChild(tr);
     return;
   }
-  tbody.innerHTML = "";
   list.slice().reverse().forEach(s => {
     const row = document.createElement("tr");
     row.style.cursor = "pointer";
-    row.innerHTML = `<td>${s.id}</td><td>${s.filename}</td><td>${s.rows_scanned}</td><td>${new Date(s.created_at).toLocaleString()}</td>`;
+    row.appendChild(textCell(s.id));
+    row.appendChild(textCell(s.filename));          // filename rendered as text, not HTML
+    row.appendChild(textCell(s.rows_scanned));
+    row.appendChild(textCell(new Date(s.created_at).toLocaleString()));
     row.onclick = () => showScanDetail(s);
     tbody.appendChild(row);
   });
@@ -66,22 +83,30 @@ function renderScans(list) {
 
 function filterScans() {
   const q = document.getElementById("scan-search").value.toLowerCase();
-  renderScans(allScans.filter(s => s.filename.toLowerCase().includes(q)));
+  renderScans(allScans.filter(s => (s.filename || "").toLowerCase().includes(q)));
 }
 
 function showScanDetail(scan) {
   const panel = document.getElementById("scan-detail-panel");
+  // innerText (not innerHTML) so the filename in the title can't inject either.
   document.getElementById("scan-detail-title").innerText = `Findings for Scan #${scan.id} — ${scan.filename}`;
   const tbody = document.getElementById("scan-detail-body");
   const findings = allViolations.filter(v => v.scan_id === scan.id);
 
+  tbody.innerHTML = "";
   if (findings.length === 0) {
-    tbody.innerHTML = `<tr><td colspan="4" class="empty-state">No violations — clean scan!</td></tr>`;
+    const tr = document.createElement("tr");
+    const td = document.createElement("td");
+    td.colSpan = 4; td.className = "empty-state";
+    td.textContent = "No violations — clean scan!";
+    tr.appendChild(td); tbody.appendChild(tr);
   } else {
-    tbody.innerHTML = "";
     findings.forEach(v => {
       const row = document.createElement("tr");
-      row.innerHTML = `<td>${v.server_id}</td><td>${v.rule_name}</td><td class="${v.severity}">${v.severity}</td><td>${v.is_anomaly ? "⚠️ Yes" : "No"}</td>`;
+      row.appendChild(textCell(v.server_id));                 // uploaded value -> text
+      row.appendChild(textCell(v.rule_name));                 // uploaded value -> text
+      row.appendChild(textCell(v.severity, v.severity));      // severity also used as CSS class
+      row.appendChild(textCell(v.is_anomaly ? "⚠️ Yes" : "No"));
       tbody.appendChild(row);
     });
   }

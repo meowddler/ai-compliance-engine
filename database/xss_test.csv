@@ -1,0 +1,3 @@
+server_id,port,port_exposed,mfa_enabled,last_login_days,failed_logins
+<img src=x onerror=alert('XSS')>,3389,true,false,10,5
+srv-safe,443,false,true,20,0
