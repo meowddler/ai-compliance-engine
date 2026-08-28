@@ -1,5 +1,7 @@
 import json
-from backend.rules.rule_engine import evaluate_condition, rule_matches, evaluate_row
+from backend.rules.rule_engine import (
+    evaluate_condition, rule_matches, evaluate_row, evaluate_rule_status, Status
+)
 
 
 class FakeRule:
@@ -73,17 +75,57 @@ def test_evaluate_row_no_violation_when_clean():
     assert result["errors"] == []
 
 
-def test_evaluate_row_surfaces_error_on_missing_field():
-    """A rule referencing a field absent from the data must surface an error,
-    never silently pass. This is the core S0-03 guarantee."""
-    row = {"server_id": "srv-x", "port": 443}
-    rule = FakeRule(
-        name="needs_encryption",
-        severity="HIGH",
-        description="Encryption must be enabled",
-        condition=[{"field": "encryption_enabled", "operator": "==", "value": True}]
-    )
-    result = evaluate_row(row, [rule])
-    assert len(result["violations"]) == 0      # did NOT fire
-    assert len(result["errors"]) == 1          # but DID surface an error
-    assert "encryption_enabled" in result["errors"][0]["reason"]
+# --- Status model tests (Phase 1) -----------------------------------------
+
+def test_status_fail_when_rule_fires():
+    row = {"server_id": "s", "port": 3389}
+    rule = FakeRule("risky", "HIGH", "risky port",
+                    [{"field": "port", "operator": "==", "value": 3389}])
+    assert evaluate_rule_status(row, rule)["status"] == Status.FAIL
+
+
+def test_status_pass_when_rule_does_not_fire():
+    row = {"server_id": "s", "port": 443}
+    rule = FakeRule("risky", "HIGH", "risky port",
+                    [{"field": "port", "operator": "==", "value": 3389}])
+    assert evaluate_rule_status(row, rule)["status"] == Status.PASS
+
+
+def test_status_insufficient_evidence_when_field_absent():
+    """A field the rule needs is missing -> INSUFFICIENT_EVIDENCE, never PASS.
+    This is the core guarantee: missing evidence is not compliance."""
+    row = {"server_id": "s", "port": 443}
+    rule = FakeRule("enc", "HIGH", "encryption required",
+                    [{"field": "encryption_enabled", "operator": "==", "value": True}])
+    result = evaluate_rule_status(row, rule)
+    assert result["status"] == Status.INSUFFICIENT_EVIDENCE
+    assert "encryption_enabled" in result["reason"]
+
+
+def test_status_error_on_type_mismatch():
+    """A present field with an incompatible type -> ERROR (the rule/data is broken),
+    distinct from missing evidence."""
+    row = {"server_id": "s", "patch_level": "unknown"}
+    rule = FakeRule("patch", "HIGH", "patch level",
+                    [{"field": "patch_level", "operator": ">", "value": 5}])
+    assert evaluate_rule_status(row, rule)["status"] == Status.ERROR
+
+
+def test_status_error_on_bad_json():
+    row = {"server_id": "s"}
+    rule = FakeRule("broken", "HIGH", "broken rule", [])
+    rule.condition = "this is not json"
+    assert evaluate_rule_status(row, rule)["status"] == Status.ERROR
+
+
+def test_evaluate_row_separates_insufficient_from_errors():
+    """Missing field and type mismatch must land in DIFFERENT buckets."""
+    row = {"server_id": "s", "patch_level": "unknown"}
+    missing = FakeRule("enc", "HIGH", "enc",
+                       [{"field": "encryption_enabled", "operator": "==", "value": True}])
+    mismatch = FakeRule("patch", "HIGH", "patch",
+                        [{"field": "patch_level", "operator": ">", "value": 5}])
+    result = evaluate_row(row, [missing, mismatch])
+    assert len(result["insufficient_evidence"]) == 1   # the missing field
+    assert len(result["errors"]) == 1                  # the type mismatch
+    assert len(result["violations"]) == 0
