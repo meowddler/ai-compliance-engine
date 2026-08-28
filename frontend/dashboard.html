@@ -98,10 +98,10 @@ async function loadDashboard() {
     type: "doughnut",
     data: {
       labels: ["HIGH", "MEDIUM", "LOW"],
-      datasets: [{ data: [data.severity_breakdown.HIGH, data.severity_breakdown.MEDIUM, data.severity_breakdown.LOW], backgroundColor: ["#f87171", "#fbbf24", "#34d399"], borderWidth: 0 }]
+      datasets: [{ data: [data.severity_breakdown.HIGH, data.severity_breakdown.MEDIUM, data.severity_breakdown.LOW], backgroundColor: ["#f0523f", "#f5a623", "#35c98a"], borderWidth: 0, borderColor: "#16161a", borderWidth: 3 }]
     },
     options: {
-      plugins: { legend: { labels: { color: "#e6e8eb" } } },
+      plugins: { legend: { labels: { color: "#8a8a94", font: { size: 12 }, padding: 16 } } }, cutout: "50%",
       onClick: (evt, elements) => {
         if (elements.length > 0) {
           activeFilter = ["HIGH", "MEDIUM", "LOW"][elements[0].index];

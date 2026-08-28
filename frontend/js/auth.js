@@ -52,7 +52,7 @@ function renderNav(activePage) {
 
   document.getElementById("nav-placeholder").innerHTML = `
     <nav class="sidebar">
-      <h1>🛡️ Compliance Engine</h1>
+      <h1>Compliance Engine</h1>
       <div class="role-badge">${getUsername()} <span class="role-tag">${role}</span></div>
       ${linksHtml}
       <a href="#" class="logout" onclick="logout()">Logout</a>

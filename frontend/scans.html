@@ -8,30 +8,60 @@
 <body>
 <div id="nav-placeholder"></div>
 <main>
-  <h2>Scans</h2>
-  <div class="panel" style="max-width:420px">
-    <h2 style="margin-top:0;font-size:16px">Upload New Log File</h2>
-    <input type="file" id="fileInput" accept=".csv">
-    <button onclick="uploadFile()">Run Scan</button>
-    <button class="action-btn danger" onclick="resetScans()" style="margin-top:10px">🗑 Clear Scan History</button>
-    <p id="upload-status" style="font-size:13px;color:var(--text-muted)"></p>
+  <div class="page-head">
+    <div>
+      <h2 style="margin-bottom:4px">Scans</h2>
+      <p class="page-sub">Upload infrastructure logs and review compliance findings.</p>
+    </div>
   </div>
+
+  <!-- Upload zone -->
+  <div class="panel upload-zone" id="upload-zone">
+    <div class="upload-inner">
+      <div class="upload-icon">⬆</div>
+      <div class="upload-text">
+        <strong>Upload a log file</strong>
+        <span>CSV format · drag &amp; drop or browse</span>
+      </div>
+      <input type="file" id="fileInput" accept=".csv" hidden>
+      <div class="upload-actions">
+        <button onclick="document.getElementById('fileInput').click()">Choose File</button>
+        <button id="run-btn" onclick="uploadFile()">Run Scan</button>
+      </div>
+    </div>
+    <div class="upload-footer">
+      <span id="file-name" class="file-name">No file selected</span>
+      <button class="action-btn danger" onclick="resetScans()">Clear Scan History</button>
+    </div>
+    <p id="upload-status" class="status-line"></p>
+  </div>
+
+  <!-- Scan history -->
   <div class="panel">
-    <h2 style="margin-top:0">Scan History <span style="font-size:12px;color:var(--text-muted);font-weight:400">(click a row for details)</span></h2>
+    <div class="panel-head">
+      <h2>Scan History</h2>
+      <span class="hint">click a row for details</span>
+    </div>
     <input type="text" id="scan-search" placeholder="Search by filename..." oninput="filterScans()">
     <table>
-      <thead><tr><th>ID</th><th>Filename</th><th>Rows Scanned</th><th>Time</th></tr></thead>
+      <thead><tr><th>ID</th><th>Filename</th><th>Rows</th><th>Time</th></tr></thead>
       <tbody id="scans-body"></tbody>
     </table>
   </div>
+
+  <!-- Findings detail -->
   <div class="panel" id="scan-detail-panel" style="display:none">
-    <h2 style="margin-top:0" id="scan-detail-title">Findings</h2>
+    <div class="panel-head">
+      <h2 id="scan-detail-title">Findings</h2>
+    </div>
+    <div class="status-summary" id="status-summary"></div>
     <table>
-      <thead><tr><th>Server</th><th>Rule</th><th>Severity</th><th>Anomaly?</th></tr></thead>
+      <thead><tr><th>Server</th><th>Rule</th><th>Status</th><th>Severity</th><th>Anomaly</th></tr></thead>
       <tbody id="scan-detail-body"></tbody>
     </table>
   </div>
 </main>
+
 <script src="js/auth.js"></script>
 <script>
 requireAuth();
@@ -40,13 +70,20 @@ renderNav("scans.html");
 let allScans = [];
 let allViolations = [];
 
-// Small helper: make a <td> whose content is set as TEXT, never HTML.
-// This is the fix for stored XSS — uploaded values like server_id, rule_name
-// and filename are attacker-controllable, so they must never be parsed as HTML.
 function textCell(value, className) {
   const td = document.createElement("td");
   td.textContent = value ?? "";
   if (className) td.className = className;
+  return td;
+}
+
+// A status pill cell (PASS/FAIL/ERROR/INSUFFICIENT_EVIDENCE), built as text.
+function pillCell(value) {
+  const td = document.createElement("td");
+  const span = document.createElement("span");
+  span.className = "pill " + (value || "").toLowerCase().replace(/_/g, "-");
+  span.textContent = (value || "").replace(/_/g, " ");
+  td.appendChild(span);
   return td;
 }
 
@@ -69,11 +106,13 @@ function renderScans(list) {
     tr.appendChild(td); tbody.appendChild(tr);
     return;
   }
-  list.slice().reverse().forEach(s => {
+  list.slice().reverse().forEach((s, i) => {
     const row = document.createElement("tr");
     row.style.cursor = "pointer";
-    row.appendChild(textCell(s.id));
-    row.appendChild(textCell(s.filename));          // filename rendered as text, not HTML
+    row.style.animationDelay = (i * 0.03) + "s";
+    row.className = "row-in";
+    row.appendChild(textCell("#" + s.id));
+    row.appendChild(textCell(s.filename));
     row.appendChild(textCell(s.rows_scanned));
     row.appendChild(textCell(new Date(s.created_at).toLocaleString()));
     row.onclick = () => showScanDetail(s);
@@ -88,25 +127,45 @@ function filterScans() {
 
 function showScanDetail(scan) {
   const panel = document.getElementById("scan-detail-panel");
-  // innerText (not innerHTML) so the filename in the title can't inject either.
-  document.getElementById("scan-detail-title").innerText = `Findings for Scan #${scan.id} — ${scan.filename}`;
+  document.getElementById("scan-detail-title").innerText = `Scan #${scan.id} — ${scan.filename}`;
   const tbody = document.getElementById("scan-detail-body");
   const findings = allViolations.filter(v => v.scan_id === scan.id);
+
+  // Status summary counts
+  const counts = {};
+  findings.forEach(v => { const s = v.status || "FAIL"; counts[s] = (counts[s] || 0) + 1; });
+  const summary = document.getElementById("status-summary");
+  summary.innerHTML = "";
+  Object.entries(counts).forEach(([status, n]) => {
+    const chip = document.createElement("span");
+    chip.className = "summary-chip " + status.toLowerCase().replace(/_/g, "-");
+    chip.textContent = `${status.replace(/_/g, " ")}: ${n}`;
+    summary.appendChild(chip);
+  });
 
   tbody.innerHTML = "";
   if (findings.length === 0) {
     const tr = document.createElement("tr");
     const td = document.createElement("td");
-    td.colSpan = 4; td.className = "empty-state";
-    td.textContent = "No violations — clean scan!";
+    td.colSpan = 5; td.className = "empty-state";
+    td.textContent = "No findings — clean scan!";
     tr.appendChild(td); tbody.appendChild(tr);
   } else {
-    findings.forEach(v => {
+    findings.forEach((v, i) => {
       const row = document.createElement("tr");
-      row.appendChild(textCell(v.server_id));                 // uploaded value -> text
-      row.appendChild(textCell(v.rule_name));                 // uploaded value -> text
-      row.appendChild(textCell(v.severity, v.severity));      // severity also used as CSS class
-      row.appendChild(textCell(v.is_anomaly ? "⚠️ Yes" : "No"));
+      row.style.animationDelay = (i * 0.02) + "s";
+      row.className = "row-in";
+      row.appendChild(textCell(v.server_id));
+      row.appendChild(textCell(v.rule_name));
+      row.appendChild(pillCell(v.status || "FAIL"));
+      row.appendChild(textCell(v.severity, v.severity));
+      const anomalyTd = document.createElement("td");
+      if (v.is_anomaly) {
+        anomalyTd.innerHTML = '<span class="dot amber"></span>Yes';
+      } else {
+        anomalyTd.textContent = "No";
+      }
+      row.appendChild(anomalyTd);
       tbody.appendChild(row);
     });
   }
@@ -114,19 +173,37 @@ function showScanDetail(scan) {
   panel.scrollIntoView({ behavior: "smooth" });
 }
 
+// file name display
+document.getElementById("fileInput").addEventListener("change", (e) => {
+  const name = e.target.files.length ? e.target.files[0].name : "No file selected";
+  document.getElementById("file-name").textContent = name;
+});
+
+// drag & drop
+const zone = document.getElementById("upload-zone");
+["dragover", "dragenter"].forEach(ev => zone.addEventListener(ev, e => { e.preventDefault(); zone.classList.add("drag"); }));
+["dragleave", "drop"].forEach(ev => zone.addEventListener(ev, e => { e.preventDefault(); zone.classList.remove("drag"); }));
+zone.addEventListener("drop", e => {
+  if (e.dataTransfer.files.length) {
+    document.getElementById("fileInput").files = e.dataTransfer.files;
+    document.getElementById("file-name").textContent = e.dataTransfer.files[0].name;
+  }
+});
+
 async function uploadFile() {
   const fileInput = document.getElementById("fileInput");
   const status = document.getElementById("upload-status");
-  if (!fileInput.files.length) { status.innerText = "Choose a CSV file first."; return; }
+  if (!fileInput.files.length) { status.className = "status-line err"; status.innerText = "Choose a CSV file first."; return; }
   const formData = new FormData();
   formData.append("file", fileInput.files[0]);
-  status.innerText = "Scanning...";
+  status.className = "status-line"; status.innerText = "Scanning...";
   const res = await apiFetch("/upload-logs", { method: "POST", body: formData });
   if (res.ok) {
     const data = await res.json();
+    status.className = "status-line ok";
     status.innerText = `Scan complete — ${data.rows_scanned} rows scanned.`;
     loadScans();
-  } else { status.innerText = "Scan failed."; }
+  } else { status.className = "status-line err"; status.innerText = "Scan failed."; }
 }
 
 async function resetScans() {
@@ -134,11 +211,12 @@ async function resetScans() {
   const res = await apiFetch("/scans/reset", { method: "DELETE" });
   const status = document.getElementById("upload-status");
   if (res.ok) {
+    status.className = "status-line ok";
     status.innerText = "Scan history cleared.";
     document.getElementById("scan-detail-panel").style.display = "none";
     loadScans();
-  } else if (res.status === 403) { status.innerText = "Not authorized — Admin only."; }
-  else { status.innerText = "Failed to reset."; }
+  } else if (res.status === 403) { status.className = "status-line err"; status.innerText = "Not authorized — Admin only."; }
+  else { status.className = "status-line err"; status.innerText = "Failed to reset."; }
 }
 loadScans();
 </script>
