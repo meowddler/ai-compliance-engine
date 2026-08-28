@@ -38,6 +38,7 @@ class Violation(Base):
     server_id = Column(String, index=True)
     rule_name = Column(String)
     severity = Column(String)
+    status = Column(String, default="FAIL", index=True)   # PASS/FAIL/ERROR/INSUFFICIENT_EVIDENCE
     message = Column(String)
     is_anomaly = Column(Boolean, default=False)
     anomaly_score = Column(String, nullable=True)

@@ -121,27 +121,19 @@ async def upload_logs(file: UploadFile = File(...), db: Session = Depends(get_db
                 result["is_anomaly"] = is_anomaly
                 result["anomaly_score"] = anomaly_map[server]["anomaly_score"]
 
-            for v in result["violations"]:
+            # Record every non-PASS result with its explicit status. A PASS is
+            # compliant and needs no finding row; FAIL / ERROR / INSUFFICIENT_
+            # EVIDENCE each persist with the status that says what happened.
+            for r in result["results"]:
+                if r["status"] == "PASS":
+                    continue
                 db.add(Violation(
                     scan_id=scan.id,
                     server_id=server,
-                    rule_name=v["rule"],
-                    severity=v["severity"],
-                    message=v["message"],
-                    is_anomaly=is_anomaly,
-                    anomaly_score=anomaly_score
-                ))
-
-            # Evaluation errors must be recorded, never dropped. A control that
-            # could not run is surfaced as an EVALUATION_ERROR row so it is
-            # visible in findings rather than silently treated as a clean pass.
-            for e in result.get("errors", []):
-                db.add(Violation(
-                    scan_id=scan.id,
-                    server_id=server,
-                    rule_name=e["rule"],
-                    severity="EVALUATION_ERROR",
-                    message=f"Could not evaluate: {e['reason']}",
+                    rule_name=r["rule"],
+                    severity=r["severity"],
+                    status=r["status"],
+                    message=r.get("message") if r["status"] == "FAIL" else r.get("reason"),
                     is_anomaly=is_anomaly,
                     anomaly_score=anomaly_score
                 ))
