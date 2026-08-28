@@ -8,7 +8,7 @@ from backend.core.dependencies import require_role, get_current_user
 from backend.rules.rule_engine import evaluate_dataframe
 from backend.ml_engine.anomaly_detector import detect_anomalies
 from backend.database import get_db
-from backend.models.models import Violation, Scan, Rule, User
+from backend.models.models import Violation, Scan, Rule, User, Framework
 from backend.schemas.schemas import RuleCreate, RuleUpdate
 from backend.core.auth import verify_password, create_access_token
 from backend.core.dependencies import require_role
@@ -163,6 +163,22 @@ def get_rules(db: Session = Depends(get_db), current_user: User = Depends(get_cu
         Rule.organization_id == current_user.organization_id,
         Rule.is_current == True
     ).all()
+
+@app.get("/frameworks")
+def get_frameworks(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    frameworks = db.query(Framework).order_by(Framework.name, Framework.clause_id).all()
+    return [
+        {
+            "id": f.id,
+            "name": f.name,
+            "version": f.version,
+            "clause_id": f.clause_id,
+            "title": f.title,
+            "label": f"{f.name}:{f.version} {f.clause_id} — {f.title}",
+        }
+        for f in frameworks
+    ]
+
 
 @app.post("/rules")
 def create_rule(rule: RuleCreate, db: Session = Depends(get_db), current_user: User = Depends(require_role(["Admin"]))):

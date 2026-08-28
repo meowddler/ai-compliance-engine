@@ -12,6 +12,16 @@ class Organization(Base):
     name = Column(String, unique=True, index=True)
     created_at = Column(DateTime, default=datetime.utcnow)
 
+class Framework(Base):
+    __tablename__ = "frameworks"
+
+    id = Column(Integer, primary_key=True, index=True)
+    name = Column(String, index=True)          # e.g. "ISO 27001"
+    version = Column(String)                    # e.g. "2022"
+    clause_id = Column(String, index=True)      # e.g. "A.8.5"
+    title = Column(String)                      # e.g. "Secure authentication"
+    description = Column(String, nullable=True)
+
 
 
 class Rule(Base):
@@ -22,6 +32,7 @@ class Rule(Base):
     name = Column(String, index=True)
     description = Column(String)
     framework = Column(String)
+    framework_clause_id = Column(Integer, ForeignKey("frameworks.id"), nullable=True, index=True)
     severity = Column(String)
     remediation = Column(String)
     condition = Column(String)          # NEW — stores rule logic as JSON text
