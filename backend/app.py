@@ -159,7 +159,10 @@ def get_scans(db: Session = Depends(get_db), current_user: User = Depends(get_cu
 
 @app.get("/rules")
 def get_rules(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
-    return db.query(Rule).filter(Rule.organization_id == current_user.organization_id).all()
+    return db.query(Rule).filter(
+        Rule.organization_id == current_user.organization_id,
+        Rule.is_current == True
+    ).all()
 
 @app.post("/rules")
 def create_rule(rule: RuleCreate, db: Session = Depends(get_db), current_user: User = Depends(require_role(["Admin"]))):
@@ -179,9 +182,13 @@ def create_rule(rule: RuleCreate, db: Session = Depends(get_db), current_user: U
     log_action(db, current_user.username, "rule_created", f"Created rule: {db_rule.name}")
     return db_rule
 
+
 @app.put("/rules/{rule_id}")
 def update_rule(rule_id: int, rule: RuleUpdate, db: Session = Depends(get_db), current_user: User = Depends(require_role(["Admin", "Auditor"]))):
-    db_rule = db.query(Rule).filter(Rule.id == rule_id).first()
+    db_rule = db.query(Rule).filter(
+        Rule.id == rule_id,
+        Rule.organization_id == current_user.organization_id
+    ).first()
     if not db_rule:
         return {"error": "Rule not found"}
 
@@ -189,28 +196,47 @@ def update_rule(rule_id: int, rule: RuleUpdate, db: Session = Depends(get_db), c
     if "condition" in update_data:
         update_data["condition"] = json.dumps([c.dict() if hasattr(c, "dict") else c for c in rule.condition])
 
-    # Record what actually changes, so the audit entry names the substance of
-    # the edit rather than a bare "rule updated". Silently altering detection
-    # logic is exactly the gap a compliance audit trail must close.
+    # Detect what actually changes.
     changes = []
     for key, value in update_data.items():
-        old_value = getattr(db_rule, key)
-        if old_value != value:
-            changes.append(f"{key}: {old_value!r} -> {value!r}")
-            setattr(db_rule, key, value)
+        if getattr(db_rule, key) != value:
+            changes.append(f"{key}: {getattr(db_rule, key)!r} -> {value!r}")
 
+    if not changes:
+        return db_rule  # nothing changed, no new version
+
+    # Immutable versioning: the old version is never mutated. We retire it and
+    # create a new version carrying the edits. Historical findings that point to
+    # the old version remain reproducible against exactly what was evaluated.
+    root_id = db_rule.parent_id or db_rule.id  # all versions share the original's id as root
+    db_rule.is_current = False
+
+    new_rule = Rule(
+        name=db_rule.name,
+        organization_id=db_rule.organization_id,
+        description=update_data.get("description", db_rule.description),
+        framework=update_data.get("framework", db_rule.framework),
+        severity=update_data.get("severity", db_rule.severity),
+        remediation=update_data.get("remediation", db_rule.remediation),
+        condition=update_data.get("condition", db_rule.condition),
+        active=update_data.get("active", db_rule.active),
+        version=db_rule.version + 1,
+        parent_id=root_id,
+        is_current=True,
+    )
+    db.add(new_rule)
     db.commit()
-    db.refresh(db_rule)
+    db.refresh(new_rule)
 
-    if changes:
-        log_action(
-            db,
-            current_user.username,
-            "rule_updated",
-            f"Updated rule '{db_rule.name}' (id={rule_id}): " + "; ".join(changes),
-        )
+    log_action(
+        db,
+        current_user.username,
+        "rule_updated",
+        f"Rule '{new_rule.name}' -> v{new_rule.version} (id={new_rule.id}): " + "; ".join(changes),
+    )
 
-    return db_rule
+    return new_rule
+
 
 @app.get("/dashboard/summary")
 def dashboard_summary(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):

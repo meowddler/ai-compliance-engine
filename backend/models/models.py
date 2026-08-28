@@ -19,13 +19,16 @@ class Rule(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     organization_id = Column(Integer, ForeignKey("organizations.id"), index=True, nullable=True)
-    name = Column(String, unique=True, index=True)
+    name = Column(String, index=True)
     description = Column(String)
     framework = Column(String)
     severity = Column(String)
     remediation = Column(String)
     condition = Column(String)          # NEW — stores rule logic as JSON text
     active = Column(Boolean, default=True)
+    version = Column(Integer, default=1)
+    parent_id = Column(Integer, ForeignKey("rules.id"), nullable=True)  # points to the original rule
+    is_current = Column(Boolean, default=True)  # False once superseded by a newer version
 
 
 
