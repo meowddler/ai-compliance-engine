@@ -4,10 +4,21 @@ from datetime import datetime
 from backend.database import Base
 
 
+
+class Organization(Base):
+    __tablename__ = "organizations"
+
+    id = Column(Integer, primary_key=True, index=True)
+    name = Column(String, unique=True, index=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
+
 class Rule(Base):
     __tablename__ = "rules"
 
     id = Column(Integer, primary_key=True, index=True)
+    organization_id = Column(Integer, ForeignKey("organizations.id"), index=True, nullable=True)
     name = Column(String, unique=True, index=True)
     description = Column(String)
     framework = Column(String)
@@ -17,10 +28,12 @@ class Rule(Base):
     active = Column(Boolean, default=True)
 
 
+
 class Scan(Base):
     __tablename__ = "scans"
 
     id = Column(Integer, primary_key=True, index=True)
+    organization_id = Column(Integer, ForeignKey("organizations.id"), index=True, nullable=True)    
     filename = Column(String)
     rows_scanned = Column(Integer)
     created_at = Column(DateTime, default=datetime.utcnow)
@@ -33,6 +46,7 @@ class Violation(Base):
     __tablename__ = "violations"
 
     id = Column(Integer, primary_key=True, index=True)
+    organization_id = Column(Integer, ForeignKey("organizations.id"), index=True, nullable=True)    
     scan_id = Column(Integer, ForeignKey("scans.id"))   # links back to the Scan it came from
 
     server_id = Column(String, index=True)
@@ -50,6 +64,7 @@ class User(Base):
     __tablename__ = "users"
 
     id = Column(Integer, primary_key=True, index=True)
+    organization_id = Column(Integer, ForeignKey("organizations.id"), index=True, nullable=True)
     username = Column(String, unique=True, index=True)
     hashed_password = Column(String)
     role = Column(String)   # "Admin", "Auditor", "Analyst"
