@@ -42,7 +42,7 @@ def login(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depend
         # a username exists (prevents user enumeration).
         raise HTTPException(status_code=401, detail="Invalid username or password")
 
-    token = create_access_token({"sub": user.username, "role": user.role})
+    token = create_access_token({"sub": user.username, "role": user.role, "org": user.organization_id})
     return {"access_token": token, "token_type": "bearer", "role": user.role}
 
 def build_anomaly_map(df):
@@ -106,7 +106,7 @@ async def upload_logs(file: UploadFile = File(...), db: Session = Depends(get_db
     # committed together at the very end. If the commit fails, rollback leaves
     # the database exactly as it was — all-or-nothing.
     try:
-        scan = Scan(filename=file.filename, rows_scanned=len(df))
+        scan = Scan(filename=file.filename, rows_scanned=len(df), organization_id=current_user.organization_id)
         db.add(scan)
         db.flush()  # assigns scan.id without committing yet
 
@@ -129,6 +129,7 @@ async def upload_logs(file: UploadFile = File(...), db: Session = Depends(get_db
                     continue
                 db.add(Violation(
                     scan_id=scan.id,
+                    organization_id=current_user.organization_id,
                     server_id=server,
                     rule_name=r["rule"],
                     severity=r["severity"],
@@ -148,22 +149,23 @@ async def upload_logs(file: UploadFile = File(...), db: Session = Depends(get_db
 
 @app.get("/violations")
 def get_violations(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
-    return db.query(Violation).all()
+    return db.query(Violation).filter(Violation.organization_id == current_user.organization_id).all()
 
 
 @app.get("/scans")
 def get_scans(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
-    return db.query(Scan).all()
+    return db.query(Scan).filter(Scan.organization_id == current_user.organization_id).all()
 
 
 @app.get("/rules")
 def get_rules(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
-    return db.query(Rule).all()
+    return db.query(Rule).filter(Rule.organization_id == current_user.organization_id).all()
 
 @app.post("/rules")
 def create_rule(rule: RuleCreate, db: Session = Depends(get_db), current_user: User = Depends(require_role(["Admin"]))):
     db_rule = Rule(
         name=rule.name,
+        organization_id=current_user.organization_id,
         description=rule.description,
         framework=rule.framework,
         severity=rule.severity,
@@ -212,18 +214,20 @@ def update_rule(rule_id: int, rule: RuleUpdate, db: Session = Depends(get_db), c
 
 @app.get("/dashboard/summary")
 def dashboard_summary(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
-    total_scans = db.query(Scan).count()
-    total_violations = db.query(Violation).count()
+    org_id = current_user.organization_id
+    total_scans = db.query(Scan).filter(Scan.organization_id == org_id).count()
+    total_violations = db.query(Violation).filter(Violation.organization_id == org_id).count()
 
-    high = db.query(Violation).filter(Violation.severity == "HIGH").count()
-    medium = db.query(Violation).filter(Violation.severity == "MEDIUM").count()
-    low = db.query(Violation).filter(Violation.severity == "LOW").count()
+    high = db.query(Violation).filter(Violation.organization_id == org_id, Violation.severity == "HIGH").count()
+    medium = db.query(Violation).filter(Violation.organization_id == org_id, Violation.severity == "MEDIUM").count()
+    low = db.query(Violation).filter(Violation.organization_id == org_id, Violation.severity == "LOW").count()
 
-    anomalies = db.query(Violation).filter(Violation.is_anomaly == True).count()
+    anomalies = db.query(Violation).filter(Violation.organization_id == org_id, Violation.is_anomaly == True).count()
 
     # Recent violations for a "latest findings" table
     recent = (
         db.query(Violation)
+        .filter(Violation.organization_id == org_id)
         .order_by(Violation.created_at.desc())
         .limit(10)
         .all()
