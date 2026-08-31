@@ -450,8 +450,6 @@ input[type="checkbox"] { width: auto; margin: 0; cursor: pointer; accent-color: 
 .dash-grid { display: block; }
 .chart-panel { max-width: 380px; }
 .chart-panel canvas { max-height: 260px; }
-.chart-panel { position: sticky; top: 24px; }
-.chart-panel canvas { max-height: 260px; }
 
 /* ============================================================
    Evidence panel (Phase 2)

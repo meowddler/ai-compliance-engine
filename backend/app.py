@@ -104,8 +104,11 @@ async def upload_logs(file: UploadFile = File(...), db: Session = Depends(get_db
     # If any of this fails, we haven't created a scan record, so no ghost scan
     # can be left behind.
     try:
-        active_rules = db.query(Rule).filter(Rule.active == True).all()
+        active_rules = db.query(Rule).filter(Rule.active == True, Rule.is_current == True).all()
         rule_results = evaluate_dataframe(df, active_rules)
+        # name -> exact rule id (this version), so each finding pins the rule
+        # version that actually produced it, for later reproducibility.
+        rule_id_by_name = {r.name: r.id for r in active_rules}
 
         df_with_anomalies = detect_anomalies(df)
         anomaly_map = build_anomaly_map(df_with_anomalies)
@@ -132,6 +135,7 @@ async def upload_logs(file: UploadFile = File(...), db: Session = Depends(get_db
             uploaded_by=current_user.username,
         )
         db.add(evidence)
+        db.flush()   # assign evidence.id so violations can reference it
 
         for result in rule_results:
             server = result["server_id"]
@@ -153,6 +157,8 @@ async def upload_logs(file: UploadFile = File(...), db: Session = Depends(get_db
                 db.add(Violation(
                     scan_id=scan.id,
                     organization_id=current_user.organization_id,
+                    evidence_id=evidence.id,
+                    rule_id=rule_id_by_name.get(r["rule"]),
                     server_id=server,
                     rule_name=r["rule"],
                     severity=r["severity"],
@@ -173,6 +179,44 @@ async def upload_logs(file: UploadFile = File(...), db: Session = Depends(get_db
 @app.get("/violations")
 def get_violations(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
     return db.query(Violation).filter(Violation.organization_id == current_user.organization_id).all()
+
+@app.get("/violations/{violation_id}/provenance")
+def get_violation_provenance(violation_id: int, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    v = db.query(Violation).filter(
+        Violation.id == violation_id,
+        Violation.organization_id == current_user.organization_id
+    ).first()
+    if not v:
+        raise HTTPException(status_code=404, detail="Finding not found")
+
+    ev = db.query(Evidence).filter(Evidence.id == v.evidence_id).first() if v.evidence_id else None
+    rule = db.query(Rule).filter(Rule.id == v.rule_id).first() if v.rule_id else None
+
+    return {
+        "finding": {
+            "id": v.id,
+            "server_id": v.server_id,
+            "status": v.status,
+            "severity": v.severity,
+            "message": v.message,
+            "detected_at": v.created_at.isoformat() if v.created_at else None,
+        },
+        "evidence": {
+            "id": ev.id,
+            "filename": ev.filename,
+            "sha256": ev.sha256,
+            "collected_at": ev.collected_at.isoformat() if ev.collected_at else None,
+            "uploaded_by": ev.uploaded_by,
+        } if ev else None,
+        "control": {
+            "rule_id": rule.id,
+            "name": rule.name,
+            "version": rule.version,
+            "condition": rule.condition,
+            "is_current": rule.is_current,
+        } if rule else None,
+        "reproducible": bool(ev and rule),
+    }
 
 
 @app.get("/scans")

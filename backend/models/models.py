@@ -77,6 +77,8 @@ class Violation(Base):
     id = Column(Integer, primary_key=True, index=True)
     organization_id = Column(Integer, ForeignKey("organizations.id"), index=True, nullable=True)    
     scan_id = Column(Integer, ForeignKey("scans.id"))   # links back to the Scan it came from
+    evidence_id = Column(Integer, ForeignKey("evidence.id"), nullable=True, index=True)  # the exact file evaluated
+    rule_id = Column(Integer, ForeignKey("rules.id"), nullable=True, index=True)         # the exact rule VERSION that fired
 
     server_id = Column(String, index=True)
     rule_name = Column(String)
