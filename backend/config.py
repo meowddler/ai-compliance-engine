@@ -24,3 +24,9 @@ DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./compliance.db")
 CORS_ORIGINS = [o.strip() for o in os.getenv("CORS_ORIGINS", "").split(",") if o.strip()]
 
 EVIDENCE_FRESHNESS_DAYS = int(os.getenv("EVIDENCE_FRESHNESS_DAYS", "90"))
+
+
+AI_PROVIDER = os.getenv("AI_PROVIDER", "nvidia")
+NVIDIA_API_KEY = os.getenv("NVIDIA_API_KEY", "")
+AI_BASE_URL = os.getenv("AI_BASE_URL", "https://integrate.api.nvidia.com/v1")
+AI_MODEL = os.getenv("AI_MODEL", "nvidia/nemotron-3-ultra-550b-a55b")

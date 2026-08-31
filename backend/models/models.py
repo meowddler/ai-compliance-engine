@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, Boolean, DateTime, ForeignKey
+from sqlalchemy import Column, Integer, String, Boolean, DateTime, ForeignKey, Text
 from sqlalchemy.orm import relationship
 from datetime import datetime
 from backend.database import Base
@@ -109,3 +109,33 @@ class AuditLog(Base):
     action = Column(String)          # e.g. "rule_created", "scan_run", "report_generated"
     details = Column(String)         # short human-readable description
     timestamp = Column(DateTime, default=datetime.utcnow)
+
+
+class AIInteraction(Base):
+    """Immutable record of every AI call.
+
+    The roadmap's requirement: every AI call must be reconstructible later.
+    Stores what was asked, what came back, which model and prompt version
+    produced it, and what it cost — so any AI-derived artifact can be audited.
+    """
+    __tablename__ = "ai_interactions"
+
+    id = Column(Integer, primary_key=True, index=True)
+    organization_id = Column(Integer, ForeignKey("organizations.id"), index=True, nullable=True)
+
+    task = Column(String, index=True)          # e.g. "explain_finding"
+    provider = Column(String)                  # e.g. "nvidia"
+    model = Column(String)                     # exact model id
+    prompt_version = Column(String)            # which prompt template version
+
+    input_ref = Column(String, nullable=True)  # what it was about, e.g. "violation:72"
+    input_hash = Column(String, nullable=True) # hash of the input, for reproducibility
+    raw_output = Column(Text, nullable=True)   # exactly what the model returned
+
+    latency_ms = Column(Integer, nullable=True)
+    prompt_tokens = Column(Integer, nullable=True)
+    completion_tokens = Column(Integer, nullable=True)
+
+    error = Column(String, nullable=True)
+    requested_by = Column(String)              # username
+    created_at = Column(DateTime, default=datetime.utcnow)

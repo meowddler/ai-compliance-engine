@@ -21,6 +21,8 @@ from backend.utils.audit import log_action
 from backend.config import CORS_ORIGINS, EVIDENCE_FRESHNESS_DAYS
 from fastapi.staticfiles import StaticFiles
 from datetime import datetime
+from backend.ai.service import explain_finding
+from backend.models.models import AIInteraction
 
 app = FastAPI()
 
@@ -186,6 +188,20 @@ async def upload_logs(file: UploadFile = File(...), db: Session = Depends(get_db
 
     log_action(db, current_user.username, "scan_run", f"Scanned {file.filename} ({len(df)} rows)")
     return {"scan_id": scan.id, "filename": file.filename, "rows_scanned": len(df), "findings": rule_results}
+
+@app.post("/violations/{violation_id}/explain")
+def explain_violation(violation_id: int, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    v = db.query(Violation).filter(
+        Violation.id == violation_id,
+        Violation.organization_id == current_user.organization_id
+    ).first()
+    if not v:
+        raise HTTPException(status_code=404, detail="Finding not found")
+
+    rule = db.query(Rule).filter(Rule.id == v.rule_id).first() if v.rule_id else None
+    evidence = db.query(Evidence).filter(Evidence.id == v.evidence_id).first() if v.evidence_id else None
+
+    return explain_finding(db, violation=v, rule=rule, evidence=evidence, current_user=current_user)
 
 @app.get("/violations")
 def get_violations(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
