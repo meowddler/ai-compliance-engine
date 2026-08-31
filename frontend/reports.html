@@ -8,19 +8,39 @@
 <body>
 <div id="nav-placeholder"></div>
 <main>
-  <h2>Reports</h2>
-  <div class="panel" style="max-width:420px">
-    <p style="color:var(--text-muted);font-size:14px;margin-top:0">Generate an audit-ready PDF summarizing compliance score, violations, and recent findings.</p>
-    <button type="button" onclick="generateReport()">Generate Report</button>
-    <p id="report-status" style="font-size:13px;color:var(--text-muted)"></p>
+  <div class="page-head">
+    <div>
+      <h2 style="margin-bottom:4px">Reports</h2>
+      <p class="page-sub">Generate an audit-ready PDF of findings, severity breakdown, and anomalies.</p>
+    </div>
   </div>
-    <div class="panel" id="preview-panel" style="display:none">
-    <h2 style="margin-top:0">Report Ready</h2>
-    <p style="color:var(--text-muted);font-size:14px">Your compliance report has been generated.</p>
-    <button type="button" onclick="openReport()">↗ Open in New Tab</button>
-    <button type="button" onclick="downloadReport()" style="margin-top:10px">⬇ Download PDF</button>
+
+  <div class="report-grid">
+    <!-- Generate card -->
+    <div class="panel report-generate">
+      <div class="report-icon">▤</div>
+      <h2 style="margin:0 0 6px">Compliance Report</h2>
+      <p style="color:var(--text-muted);font-size:13.5px;margin:0 0 20px;line-height:1.5">
+        A point-in-time PDF summarizing total scans, findings by severity, detected anomalies,
+        and the most recent violations across your organization.
+      </p>
+      <button type="button" id="gen-btn" onclick="generateReport()">Generate Report</button>
+      <p id="report-status" class="status-line"></p>
+    </div>
+
+    <!-- Result card -->
+    <div class="panel report-result" id="preview-panel" style="display:none">
+      <div class="ready-badge"><span class="dot green"></span> Report ready</div>
+      <h2 style="margin:10px 0 6px">Your report is generated</h2>
+      <p style="color:var(--text-muted);font-size:13.5px;margin:0 0 20px">Open it in a new tab or download the PDF.</p>
+      <div class="report-actions">
+        <button type="button" onclick="openReport()">Open in New Tab</button>
+        <button type="button" class="action-btn" onclick="downloadReport()">Download PDF</button>
+      </div>
+    </div>
   </div>
 </main>
+
 <script src="js/auth.js"></script>
 <script>
 requireAuth();
@@ -29,23 +49,26 @@ let currentReportBlob = null;
 
 async function generateReport() {
   const status = document.getElementById("report-status");
-  status.innerText = "Generating...";
+  const btn = document.getElementById("gen-btn");
+  btn.disabled = true; btn.textContent = "Generating...";
+  status.className = "status-line"; status.innerText = "";
   try {
     const res = await apiFetch("/reports/generate", { method: "POST" });
     if (!res.ok) {
-      status.innerText = "Failed to generate report.";
+      status.className = "status-line err"; status.innerText = "Failed to generate report.";
+      btn.disabled = false; btn.textContent = "Generate Report";
       return;
     }
     const blob = await res.blob();
-    currentReportBlob = blob.type === "application/pdf"
-      ? blob
-      : new Blob([blob], { type: "application/pdf" });
-
+    currentReportBlob = blob.type === "application/pdf" ? blob : new Blob([blob], { type: "application/pdf" });
     document.getElementById("preview-panel").style.display = "block";
-    status.innerText = "Report ready.";
+    document.getElementById("preview-panel").scrollIntoView({ behavior: "smooth", block: "nearest" });
+    status.className = "status-line ok"; status.innerText = "Report ready.";
   } catch (err) {
     console.error("Report generation error:", err);
-    status.innerText = "Something went wrong generating the report.";
+    status.className = "status-line err"; status.innerText = "Something went wrong generating the report.";
+  } finally {
+    btn.disabled = false; btn.textContent = "Generate Report";
   }
 }
 
@@ -53,7 +76,6 @@ function openReport() {
   if (!currentReportBlob) return;
   const url = window.URL.createObjectURL(currentReportBlob);
   window.open(url, "_blank");
-  // Don't revoke immediately — the new tab needs the URL to load first.
   setTimeout(() => window.URL.revokeObjectURL(url), 10000);
 }
 

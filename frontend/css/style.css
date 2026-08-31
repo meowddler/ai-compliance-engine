@@ -390,8 +390,10 @@ input[type="checkbox"] { width: auto; margin: 0; cursor: pointer; accent-color: 
    Rules page
    ============================================================ */
 
-.rules-layout { display: block; }
-.rules-form-panel { max-width: 620px; }
+.rules-layout { display: grid; grid-template-columns: 1fr 380px; gap: 22px; align-items: start; }
+@media (max-width: 1100px) { .rules-layout { grid-template-columns: 1fr; } }
+
+.rules-form-panel { position: sticky; top: 24px; }
 
 .field-label {
   display: block; font-size: 11px; font-weight: 600; color: var(--text-dim);
@@ -414,3 +416,19 @@ input[type="checkbox"] { width: auto; margin: 0; cursor: pointer; accent-color: 
   border: 1px solid var(--accent-deep); border-radius: 5px; padding: 1px 7px;
 }
 .mono-cell { font-family: var(--mono); font-size: 12px; color: var(--text-muted); }
+
+/* ============================================================
+   Reports page
+   ============================================================ */
+.report-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 22px; align-items: start; max-width: 900px; }
+@media (max-width: 900px) { .report-grid { grid-template-columns: 1fr; } }
+
+.report-generate { }
+.report-icon {
+  width: 48px; height: 48px; display: flex; align-items: center; justify-content: center;
+  font-size: 22px; color: var(--accent); background: var(--accent-glow);
+  border: 1px solid var(--accent-deep); border-radius: 12px; margin-bottom: 16px;
+}
+.report-result { border-color: var(--accent-deep); box-shadow: 0 0 0 1px var(--accent-glow); animation: rowIn 0.3s ease; }
+.ready-badge { display: inline-flex; align-items: center; font-size: 12px; font-weight: 600; color: var(--low); }
+.report-actions { display: flex; gap: 10px; align-items: center; }
