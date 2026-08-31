@@ -4,11 +4,13 @@ from sqlalchemy.orm import Session
 import pandas as pd
 import io
 import json
+import hashlib
+import os
 from backend.core.dependencies import require_role, get_current_user
 from backend.rules.rule_engine import evaluate_dataframe
 from backend.ml_engine.anomaly_detector import detect_anomalies
 from backend.database import get_db
-from backend.models.models import Violation, Scan, Rule, User, Framework
+from backend.models.models import Violation, Scan, Rule, User, Framework, Evidence
 from backend.schemas.schemas import RuleCreate, RuleUpdate
 from backend.core.auth import verify_password, create_access_token
 from backend.core.dependencies import require_role
@@ -89,6 +91,15 @@ async def upload_logs(file: UploadFile = File(...), db: Session = Depends(get_db
     if "server_id" not in df.columns:
         raise HTTPException(status_code=400, detail="CSV must include a 'server_id' column.")
 
+    # --- Evidence: hash the raw bytes and persist the file before evaluation. ---
+    # The hash is computed on exactly what was uploaded, so any later tampering
+    # with the stored file is detectable. Evidence is never discarded.
+    sha256 = hashlib.sha256(contents).hexdigest()
+    evidence_dir = os.path.join("evidence_store", str(current_user.organization_id))
+    os.makedirs(evidence_dir, exist_ok=True)
+    storage_path = os.path.join(evidence_dir, f"{sha256}_{file.filename}")
+    with open(storage_path, "wb") as f:
+        f.write(contents)
     # --- Do ALL processing before touching the database. ---
     # If any of this fails, we haven't created a scan record, so no ghost scan
     # can be left behind.
@@ -109,6 +120,18 @@ async def upload_logs(file: UploadFile = File(...), db: Session = Depends(get_db
         scan = Scan(filename=file.filename, rows_scanned=len(df), organization_id=current_user.organization_id)
         db.add(scan)
         db.flush()  # assigns scan.id without committing yet
+
+        evidence = Evidence(
+            organization_id=current_user.organization_id,
+            scan_id=scan.id,
+            filename=file.filename,
+            content_type=file.content_type,
+            sha256=sha256,
+            size_bytes=len(contents),
+            storage_path=storage_path,
+            uploaded_by=current_user.username,
+        )
+        db.add(evidence)
 
         for result in rule_results:
             server = result["server_id"]
@@ -178,6 +201,30 @@ def get_frameworks(db: Session = Depends(get_db), current_user: User = Depends(g
         }
         for f in frameworks
     ]
+
+@app.get("/evidence/{evidence_id}/verify")
+def verify_evidence(evidence_id: int, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    ev = db.query(Evidence).filter(
+        Evidence.id == evidence_id,
+        Evidence.organization_id == current_user.organization_id
+    ).first()
+    if not ev:
+        raise HTTPException(status_code=404, detail="Evidence not found")
+
+    if not os.path.exists(ev.storage_path):
+        return {"evidence_id": ev.id, "status": "MISSING", "detail": "Stored file not found on disk."}
+
+    with open(ev.storage_path, "rb") as f:
+        current_hash = hashlib.sha256(f.read()).hexdigest()
+
+    intact = (current_hash == ev.sha256)
+    return {
+        "evidence_id": ev.id,
+        "filename": ev.filename,
+        "status": "INTACT" if intact else "TAMPERED",
+        "recorded_sha256": ev.sha256,
+        "current_sha256": current_hash,
+    }
 
 
 @app.post("/rules")

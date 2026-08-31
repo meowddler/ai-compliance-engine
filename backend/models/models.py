@@ -54,7 +54,22 @@ class Scan(Base):
 
     # One scan can have many violations
     violations = relationship("Violation", back_populates="scan")
+    evidence = relationship("Evidence", backref="scan", uselist=False, foreign_keys="Evidence.scan_id")
 
+class Evidence(Base):
+    __tablename__ = "evidence"
+
+    id = Column(Integer, primary_key=True, index=True)
+    organization_id = Column(Integer, ForeignKey("organizations.id"), index=True, nullable=True)
+    scan_id = Column(Integer, ForeignKey("scans.id"), nullable=True, index=True)
+
+    filename = Column(String)                       # original uploaded name
+    content_type = Column(String, nullable=True)    # e.g. text/csv
+    sha256 = Column(String, index=True)             # hash of the raw bytes at ingest
+    size_bytes = Column(Integer)
+    storage_path = Column(String)                   # where the raw file lives on disk
+    uploaded_by = Column(String)                    # username
+    collected_at = Column(DateTime, default=datetime.utcnow)  # when we ingested it
 
 class Violation(Base):
     __tablename__ = "violations"
