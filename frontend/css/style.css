@@ -385,3 +385,32 @@ input[type="checkbox"] { width: auto; margin: 0; cursor: pointer; accent-color: 
 /* Row load-in animation */
 .row-in { animation: rowIn 0.3s ease both; }
 @keyframes rowIn { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
+
+/* ============================================================
+   Rules page
+   ============================================================ */
+
+.rules-layout { display: block; }
+.rules-form-panel { max-width: 620px; }
+
+.field-label {
+  display: block; font-size: 11px; font-weight: 600; color: var(--text-dim);
+  text-transform: uppercase; letter-spacing: 0.04em; margin-bottom: 6px; margin-top: 4px;
+}
+
+.condition-box {
+  background: var(--bg-panel); border: 1px solid var(--border-soft);
+  border-radius: var(--radius-sm); padding: 14px; margin: 6px 0 16px;
+}
+.condition-row { display: grid; grid-template-columns: 1fr auto 1fr; gap: 8px; align-items: center; }
+.condition-row input { margin-bottom: 0; }
+.op-select { margin-bottom: 0; width: auto; min-width: 64px; text-align: center; }
+
+.form-actions { display: flex; gap: 10px; align-items: center; }
+
+.ver-badge {
+  display: inline-block; font-family: var(--mono); font-size: 11px; font-weight: 600;
+  color: var(--accent); background: var(--accent-glow);
+  border: 1px solid var(--accent-deep); border-radius: 5px; padding: 1px 7px;
+}
+.mono-cell { font-family: var(--mono); font-size: 12px; color: var(--text-muted); }

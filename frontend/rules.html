@@ -8,36 +8,68 @@
 <body>
 <div id="nav-placeholder"></div>
 <main>
-  <h2>Compliance Rules</h2>
-  <div class="panel">
-    <input type="text" id="rule-search" placeholder="Search by name, framework, or severity..." oninput="filterRules()">
-    <table>
-      <thead><tr><th>Name</th><th>Framework</th><th>Severity</th><th>Description</th><th>Active</th><th>Actions</th></tr></thead>
-      <tbody id="rules-body"></tbody>
-    </table>
+  <div class="page-head">
+    <div>
+      <h2 style="margin-bottom:4px">Compliance Rules</h2>
+      <p class="page-sub">Detection logic mapped to compliance frameworks. Edits create a new version; history is preserved.</p>
+    </div>
   </div>
 
-  <div class="panel" style="max-width:480px">
-    <h2 style="margin-top:0;font-size:16px" id="form-title">Create New Rule (Admin only)</h2>
-    <input type="text" id="r-name" placeholder="Rule name (e.g. weak_password_policy)">
-    <input type="text" id="r-description" placeholder="Description">
-    <input type="text" id="r-framework" placeholder="Framework (e.g. ISO 27001)">
-    <select id="r-severity"><option value="HIGH">HIGH</option><option value="MEDIUM">MEDIUM</option><option value="LOW">LOW</option></select>
-    <input type="text" id="r-remediation" placeholder="Remediation guidance">
-    <input type="text" id="r-field" placeholder="Field to check (e.g. port)">
-    <select id="r-operator"><option value="==">==</option><option value="!=">!=</option><option value=">">></option><option value="<"><</option><option value=">=">>=</option><option value="<="><=</option><option value="in">in</option></select>
-    <input type="text" id="r-value" placeholder='Value (e.g. true, 80, [22,3389])'>
-    <button id="submit-btn" onclick="submitRule()">Create Rule</button>
-    <button id="cancel-btn" onclick="cancelEdit()" style="display:none;margin-top:8px" class="action-btn">Cancel</button>
-    <p id="rule-status" style="font-size:13px;color:var(--text-muted)"></p>
+  <div class="rules-layout">
+    <!-- Rules table -->
+    <div class="panel rules-table-panel">
+      <div class="panel-head">
+        <h2>Active Rules</h2>
+        <span class="hint" id="rule-count"></span>
+      </div>
+      <input type="text" id="rule-search" placeholder="Search by name, framework, or severity..." oninput="filterRules()">
+      <table>
+        <thead><tr><th>Name</th><th>Ver</th><th>Framework</th><th>Severity</th><th>Active</th><th>Actions</th></tr></thead>
+        <tbody id="rules-body"></tbody>
+      </table>
+    </div>
+
+    <!-- Create / edit form -->
+    <div class="panel rules-form-panel">
+      <div class="panel-head">
+        <h2 id="form-title">Create New Rule</h2>
+        <span class="hint" id="form-mode">Admin only</span>
+      </div>
+      <label class="field-label">Rule name</label>
+      <input type="text" id="r-name" placeholder="e.g. weak_password_policy">
+      <label class="field-label">Description</label>
+      <input type="text" id="r-description" placeholder="What this rule detects">
+      <label class="field-label">Framework</label>
+      <input type="text" id="r-framework" placeholder="e.g. ISO 27001">
+      <label class="field-label">Severity</label>
+      <select id="r-severity"><option value="HIGH">HIGH</option><option value="MEDIUM">MEDIUM</option><option value="LOW">LOW</option></select>
+      <label class="field-label">Remediation</label>
+      <input type="text" id="r-remediation" placeholder="How to fix it">
+
+      <div class="condition-box">
+        <label class="field-label">Condition</label>
+        <div class="condition-row">
+          <input type="text" id="r-field" placeholder="field (e.g. port)">
+          <select id="r-operator" class="op-select"><option value="==">==</option><option value="!=">!=</option><option value=">">&gt;</option><option value="<">&lt;</option><option value=">=">&gt;=</option><option value="<=">&lt;=</option><option value="in">in</option></select>
+          <input type="text" id="r-value" placeholder="value">
+        </div>
+      </div>
+
+      <div class="form-actions">
+        <button id="submit-btn" onclick="submitRule()">Create Rule</button>
+        <button id="cancel-btn" onclick="cancelEdit()" style="display:none" class="action-btn">Cancel</button>
+      </div>
+      <p id="rule-status" class="status-line"></p>
+    </div>
   </div>
 </main>
+
 <script src="js/auth.js"></script>
 <script>
 requireAuth();
 renderNav("rules.html");
 let allRules = [];
-let editingId = null;   // null = create mode; a number = editing that rule
+let editingId = null;
 
 async function loadRules() {
   const res = await apiFetch("/rules");
@@ -45,17 +77,35 @@ async function loadRules() {
   renderRules(allRules);
 }
 
+function pill(text, cls) {
+  const span = document.createElement("span");
+  span.className = "pill " + cls;
+  span.textContent = text;
+  return span;
+}
+
 function renderRules(list) {
   const tbody = document.getElementById("rules-body");
+  document.getElementById("rule-count").textContent = `${list.length} rule${list.length === 1 ? "" : "s"}`;
   if (list.length === 0) { tbody.innerHTML = `<tr><td colspan="6" class="empty-state">No matching rules.</td></tr>`; return; }
   tbody.innerHTML = "";
-  list.forEach(r => {
+  list.forEach((r, i) => {
     const row = document.createElement("tr");
-    // Build cells with textContent to avoid injecting rule fields as HTML.
-    const nameTd = document.createElement("td"); nameTd.textContent = r.name;
-    const fwTd = document.createElement("td"); fwTd.textContent = r.framework;
-    const sevTd = document.createElement("td"); sevTd.textContent = r.severity; sevTd.className = r.severity;
-    const descTd = document.createElement("td"); descTd.textContent = r.description;
+    row.className = "row-in";
+    row.style.animationDelay = (i * 0.03) + "s";
+
+    const nameTd = document.createElement("td");
+    nameTd.textContent = r.name; nameTd.style.fontWeight = "600";
+
+    const verTd = document.createElement("td");
+    const vBadge = document.createElement("span");
+    vBadge.className = "ver-badge"; vBadge.textContent = "v" + (r.version || 1);
+    verTd.appendChild(vBadge);
+
+    const fwTd = document.createElement("td"); fwTd.textContent = r.framework; fwTd.className = "mono-cell";
+
+    const sevTd = document.createElement("td");
+    sevTd.appendChild(pill(r.severity, r.severity.toLowerCase()));
 
     const activeTd = document.createElement("td");
     const cb = document.createElement("input");
@@ -73,14 +123,14 @@ function renderRules(list) {
     delBtn.onclick = () => deleteRule(r.id);
     actionsTd.appendChild(editBtn); actionsTd.appendChild(delBtn);
 
-    row.append(nameTd, fwTd, sevTd, descTd, activeTd, actionsTd);
+    row.append(nameTd, verTd, fwTd, sevTd, activeTd, actionsTd);
     tbody.appendChild(row);
   });
 }
 
 function filterRules() {
   const q = document.getElementById("rule-search").value.toLowerCase();
-  renderRules(allRules.filter(r => r.name.toLowerCase().includes(q) || r.framework.toLowerCase().includes(q) || r.severity.toLowerCase().includes(q)));
+  renderRules(allRules.filter(r => r.name.toLowerCase().includes(q) || (r.framework||"").toLowerCase().includes(q) || r.severity.toLowerCase().includes(q)));
 }
 
 async function toggleRule(id, isActive) {
@@ -96,33 +146,23 @@ async function deleteRule(id) {
 }
 
 function parseValue(raw) { try { return JSON.parse(raw); } catch { return raw; } }
-
-// Render a stored condition value back into the text box.
-function valueToText(v) {
-  if (typeof v === "string") return v;
-  return JSON.stringify(v);   // true -> "true", 23 -> "23", [22,3389] -> "[22,3389]"
-}
+function valueToText(v) { return typeof v === "string" ? v : JSON.stringify(v); }
 
 function startEdit(id) {
   const rule = allRules.find(r => r.id === id);
   if (!rule) return;
   editingId = id;
-
-  document.getElementById("form-title").innerText = `Edit Rule: ${rule.name}`;
+  document.getElementById("form-title").innerText = `Edit: ${rule.name}`;
+  document.getElementById("form-mode").innerText = `creating v${(rule.version || 1) + 1}`;
   document.getElementById("r-name").value = rule.name;
-  document.getElementById("r-name").disabled = true;   // name can't be changed via the API
+  document.getElementById("r-name").disabled = true;
   document.getElementById("r-description").value = rule.description || "";
   document.getElementById("r-framework").value = rule.framework || "";
   document.getElementById("r-severity").value = rule.severity || "HIGH";
   document.getElementById("r-remediation").value = rule.remediation || "";
 
-  // The condition is stored as a JSON string; parse out the first condition.
   let cond = { field: "", operator: "==", value: "" };
-  try {
-    const parsed = JSON.parse(rule.condition);
-    if (Array.isArray(parsed) && parsed.length) cond = parsed[0];
-  } catch { /* leave defaults */ }
-
+  try { const parsed = JSON.parse(rule.condition); if (Array.isArray(parsed) && parsed.length) cond = parsed[0]; } catch {}
   document.getElementById("r-field").value = cond.field || "";
   document.getElementById("r-operator").value = cond.operator || "==";
   document.getElementById("r-value").value = valueToText(cond.value);
@@ -130,12 +170,13 @@ function startEdit(id) {
   document.getElementById("submit-btn").innerText = "Save Changes";
   document.getElementById("cancel-btn").style.display = "inline-block";
   document.getElementById("rule-status").innerText = "";
-  document.getElementById("form-title").scrollIntoView({ behavior: "smooth" });
+  document.querySelector(".rules-form-panel").scrollIntoView({ behavior: "smooth", block: "nearest" });
 }
 
 function cancelEdit() {
   editingId = null;
-  document.getElementById("form-title").innerText = "Create New Rule (Admin only)";
+  document.getElementById("form-title").innerText = "Create New Rule";
+  document.getElementById("form-mode").innerText = "Admin only";
   document.getElementById("r-name").disabled = false;
   ["r-name","r-description","r-framework","r-remediation","r-field","r-value"].forEach(id => document.getElementById(id).value = "");
   document.getElementById("r-severity").value = "HIGH";
@@ -145,7 +186,6 @@ function cancelEdit() {
   document.getElementById("rule-status").innerText = "";
 }
 
-// One handler for both create and edit, decided by editingId.
 async function submitRule() {
   const status = document.getElementById("rule-status");
   const condition = [{
@@ -155,22 +195,19 @@ async function submitRule() {
   }];
 
   if (editingId === null) {
-    // CREATE
     const payload = {
       name: document.getElementById("r-name").value,
       description: document.getElementById("r-description").value,
       framework: document.getElementById("r-framework").value,
       severity: document.getElementById("r-severity").value,
       remediation: document.getElementById("r-remediation").value,
-      condition,
-      active: true
+      condition, active: true
     };
     const res = await apiFetch("/rules", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
-    if (res.ok) { status.innerText = "Rule created."; cancelEdit(); loadRules(); }
-    else if (res.status === 403) { status.innerText = "Not authorized — only Admins can create rules."; }
-    else { status.innerText = "Failed to create rule."; }
+    if (res.ok) { status.className = "status-line ok"; status.innerText = "Rule created."; cancelEdit(); loadRules(); }
+    else if (res.status === 403) { status.className = "status-line err"; status.innerText = "Not authorized — only Admins can create rules."; }
+    else { status.className = "status-line err"; status.innerText = "Failed to create rule."; }
   } else {
-    // UPDATE (name is intentionally omitted — the API cannot change it)
     const payload = {
       description: document.getElementById("r-description").value,
       framework: document.getElementById("r-framework").value,
@@ -179,9 +216,9 @@ async function submitRule() {
       condition
     };
     const res = await apiFetch(`/rules/${editingId}`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
-    if (res.ok) { status.innerText = "Rule updated."; cancelEdit(); loadRules(); }
-    else if (res.status === 403) { status.innerText = "Not authorized to edit rules."; }
-    else { status.innerText = "Failed to update rule."; }
+    if (res.ok) { status.className = "status-line ok"; status.innerText = "Rule updated — new version created."; cancelEdit(); loadRules(); }
+    else if (res.status === 403) { status.className = "status-line err"; status.innerText = "Not authorized to edit rules."; }
+    else { status.className = "status-line err"; status.innerText = "Failed to update rule."; }
   }
 }
 loadRules();
