@@ -18,9 +18,20 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from backend.utils.report_generator import generate_compliance_report
 from backend.utils.audit import log_action
-from backend.config import CORS_ORIGINS
+from backend.config import CORS_ORIGINS, EVIDENCE_FRESHNESS_DAYS
 from fastapi.staticfiles import StaticFiles
+from datetime import datetime
+
 app = FastAPI()
+
+def evidence_freshness(collected_at):
+    """Classify evidence age. Stale evidence should not count as current proof
+    of compliance — a control relying on it degrades to INSUFFICIENT_EVIDENCE."""
+    if collected_at is None:
+        return {"state": "UNKNOWN", "age_days": None}
+    age_days = (datetime.utcnow() - collected_at).days
+    state = "FRESH" if age_days <= EVIDENCE_FRESHNESS_DAYS else "STALE"
+    return {"state": state, "age_days": age_days, "threshold_days": EVIDENCE_FRESHNESS_DAYS}
 
 app.add_middleware(
     CORSMiddleware,
@@ -238,6 +249,7 @@ def get_scan_evidence(scan_id: int, db: Session = Depends(get_db), current_user:
         "size_bytes": ev.size_bytes,
         "uploaded_by": ev.uploaded_by,
         "collected_at": ev.collected_at.isoformat() if ev.collected_at else None,
+        "freshness": evidence_freshness(ev.collected_at),
     }
 
 
@@ -433,11 +445,11 @@ def delete_rule(rule_id: int, db: Session = Depends(get_db), current_user: User 
 
 @app.delete("/scans/reset")
 def reset_scans(db: Session = Depends(get_db), current_user: User = Depends(require_role(["Admin"]))):
-    # Delete in FK order: evidence and violations reference scans, so they go first.
-    db.query(Evidence).delete()
+    # Delete in FK dependency order: violations reference evidence and scans,
+    # evidence references scans, so children go before parents.
     db.query(Violation).delete()
+    db.query(Evidence).delete()
     db.query(Scan).delete()
-    db.commit()
 
 
 # Serve the frontend. Must be last — it catches all routes not claimed above.
