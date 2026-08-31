@@ -23,6 +23,7 @@ from fastapi.staticfiles import StaticFiles
 from datetime import datetime
 from backend.ai.service import explain_finding
 from backend.models.models import AIInteraction
+from pydantic import BaseModel
 
 app = FastAPI()
 
@@ -188,6 +189,16 @@ async def upload_logs(file: UploadFile = File(...), db: Session = Depends(get_db
 
     log_action(db, current_user.username, "scan_run", f"Scanned {file.filename} ({len(df)} rows)")
     return {"scan_id": scan.id, "filename": file.filename, "rows_scanned": len(df), "findings": rule_results}
+
+class DraftControlRequest(BaseModel):
+    requirement: str
+
+
+@app.post("/ai/draft-control")
+def ai_draft_control(req: DraftControlRequest, db: Session = Depends(get_db), current_user: User = Depends(require_role(["Admin"]))):
+    from backend.ai.service import draft_control
+    available = ["server_id", "port", "port_exposed", "mfa_enabled", "last_login_days", "failed_logins"]
+    return draft_control(db, requirement_text=req.requirement, available_fields=available, current_user=current_user)
 
 @app.post("/violations/{violation_id}/explain")
 def explain_violation(violation_id: int, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
