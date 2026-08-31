@@ -65,7 +65,7 @@
     </div>
     <div class="status-summary" id="status-summary"></div>
     <table>
-      <thead><tr><th>Server</th><th>Rule</th><th>Status</th><th>Severity</th><th>Anomaly</th></tr></thead>
+      <thead><tr><th>Server</th><th>Rule</th><th>Status</th><th>Severity</th><th>Anomaly</th><th>AI</th></tr></thead>
       <tbody id="scan-detail-body"></tbody>
     </table>
   </div>
@@ -158,7 +158,7 @@ async function loadEvidence(scanId) {
     ["Uploaded by", ev.uploaded_by],
     ["Collected", ev.collected_at ? new Date(ev.collected_at).toLocaleString() : "—"],
     ["Freshness", freshText],
-  ];
+  ]
   rows.forEach(([label, value]) => {
     const l = document.createElement("div"); l.className = "ev-label"; l.textContent = label;
     const v = document.createElement("div"); v.className = "ev-value";
@@ -219,7 +219,7 @@ function showScanDetail(scan) {
   if (findings.length === 0) {
     const tr = document.createElement("tr");
     const td = document.createElement("td");
-    td.colSpan = 5; td.className = "empty-state";
+    td.colSpan = 6; td.className = "empty-state";
     td.textContent = "No findings — clean scan!";
     tr.appendChild(td); tbody.appendChild(tr);
   } else {
@@ -235,11 +235,63 @@ function showScanDetail(scan) {
       if (v.is_anomaly) { anomalyTd.innerHTML = '<span class="dot amber"></span>Yes'; }
       else { anomalyTd.textContent = "No"; }
       row.appendChild(anomalyTd);
+
+      // AI explanation — the engine's verdict is already set; this only explains it.
+      const aiTd = document.createElement("td");
+      const aiBtn = document.createElement("button");
+      aiBtn.className = "action-btn";
+      aiBtn.textContent = "Explain";
+      aiBtn.onclick = (e) => { e.stopPropagation(); explainFinding(v.id, row, aiBtn); };
+      aiTd.appendChild(aiBtn);
+      row.appendChild(aiTd);
+
       tbody.appendChild(row);
     });
   }
   panel.style.display = "block";
   document.getElementById("evidence-panel").scrollIntoView({ behavior: "smooth", block: "nearest" });
+}
+async function explainFinding(violationId, row, btn) {
+  btn.disabled = true;
+  btn.textContent = "Thinking...";
+
+  // Remove any previous explanation row for this finding
+  const existing = row.nextElementSibling;
+  if (existing && existing.classList.contains("ai-explain-row")) existing.remove();
+
+  const exRow = document.createElement("tr");
+  exRow.className = "ai-explain-row";
+  const exTd = document.createElement("td");
+  exTd.colSpan = 6;
+  exTd.className = "ai-explain-cell";
+  exTd.textContent = "Generating explanation...";
+  exRow.appendChild(exTd);
+  row.after(exRow);
+
+  try {
+    const res = await apiFetch(`/violations/${violationId}/explain`, { method: "POST" });
+    const data = await res.json();
+    exTd.innerHTML = "";
+
+    const header = document.createElement("div");
+    header.className = "ai-explain-head";
+    header.textContent = "NEMOR Analyst";
+    exTd.appendChild(header);
+
+    const body = document.createElement("div");
+    body.className = "ai-explain-body";
+    body.textContent = data.explanation || data.error || "No explanation returned.";
+    exTd.appendChild(body);
+
+    const meta = document.createElement("div");
+    meta.className = "ai-explain-meta";
+    meta.textContent = `${data.model || "—"} · prompt ${data.prompt_version || "—"} · ${data.latency_ms || 0}ms · status ${data.authoritative_status} assigned by the deterministic engine`;
+    exTd.appendChild(meta);
+  } catch (err) {
+    exTd.textContent = "Failed to generate explanation.";
+  }
+  btn.disabled = false;
+  btn.textContent = "Explain";
 }
 
 document.getElementById("fileInput").addEventListener("change", (e) => {
