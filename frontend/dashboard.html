@@ -9,25 +9,41 @@
 <body>
 <div id="nav-placeholder"></div>
 <main>
-  <h2>Dashboard</h2>
+  <div class="page-head">
+    <div>
+      <h2 style="margin-bottom:4px">Dashboard</h2>
+      <p class="page-sub">Compliance posture at a glance across your organization.</p>
+    </div>
+  </div>
+
   <div class="cards">
     <div class="card"><h3 id="scans">0</h3><p>Total Scans</p></div>
     <div class="card"><h3 id="violations">0</h3><p>Total Violations</p></div>
     <div class="card"><h3 id="anomalies">0</h3><p>Anomalies Detected</p></div>
   </div>
-  <div class="panel" style="max-width:380px">
-    <p style="font-size:12px;color:var(--text-muted);margin-top:0">Click a slice to filter findings below</p>
-    <canvas id="severityChart"></canvas>
-  </div>
-  <div class="panel">
-    <h2 style="margin-top:0">Recent Findings</h2>
-    <div id="filter-indicator"></div>
-    <table>
-      <thead><tr><th>Server</th><th>Rule</th><th>Severity</th><th>Anomaly?</th><th>Time</th></tr></thead>
-      <tbody id="findings-body"></tbody>
-    </table>
+
+  <div class="dash-grid">
+    <div class="panel chart-panel">
+      <div class="panel-head">
+        <h2>Severity Breakdown</h2>
+        <span class="hint">click a slice to filter</span>
+      </div>
+      <canvas id="severityChart"></canvas>
+    </div>
+
+    <div class="panel findings-panel">
+      <div class="panel-head">
+        <h2>Recent Findings</h2>
+        <span id="filter-indicator"></span>
+      </div>
+      <table>
+        <thead><tr><th>Server</th><th>Rule</th><th>Severity</th><th>Anomaly</th><th>Time</th></tr></thead>
+        <tbody id="findings-body"></tbody>
+      </table>
+    </div>
   </div>
 </main>
+
 <script src="js/auth.js"></script>
 <script>
 requireAuth();
@@ -51,32 +67,48 @@ function renderFindings() {
   const tbody = document.getElementById("findings-body");
   const list = activeFilter ? allRecentViolations.filter(v => v.severity === activeFilter) : allRecentViolations;
 
-  document.getElementById("filter-indicator").innerHTML = activeFilter
-    ? `<div class="filter-chip">Filtered: ${activeFilter} <button onclick="clearFilter()">✕</button></div>` : "";
+  const fi = document.getElementById("filter-indicator");
+  fi.innerHTML = "";
+  if (activeFilter) {
+    const chip = document.createElement("span");
+    chip.className = "filter-chip";
+    chip.textContent = `Filtered: ${activeFilter} `;
+    const btn = document.createElement("button");
+    btn.textContent = "✕"; btn.onclick = clearFilter;
+    chip.appendChild(btn);
+    fi.appendChild(chip);
+  }
 
   if (list.length === 0) {
     tbody.innerHTML = `<tr><td colspan="5" class="empty-state">No findings match this filter.</td></tr>`;
     return;
   }
   tbody.innerHTML = "";
-  list.forEach(v => {
+  list.forEach((v, i) => {
     const row = document.createElement("tr");
-    // textContent, not innerHTML — uploaded values (server_id, rule_name) are
-    // attacker-controllable and must never be parsed as HTML. Same stored-XSS
-    // fix as the scans and rules pages.
-    const cells = [
-      { text: v.server_id },
-      { text: v.rule_name },
-      { text: v.severity, cls: v.severity },
-      { text: v.is_anomaly ? "⚠️ Yes" : "No" },
-      { text: new Date(v.created_at).toLocaleString() },
-    ];
-    cells.forEach(c => {
-      const td = document.createElement("td");
-      td.textContent = c.text ?? "";
-      if (c.cls) td.className = c.cls;
-      row.appendChild(td);
-    });
+    row.className = "row-in";
+    row.style.animationDelay = (i * 0.03) + "s";
+
+    // server
+    const srvTd = document.createElement("td"); srvTd.textContent = v.server_id; srvTd.style.fontWeight = "600";
+    // rule
+    const ruleTd = document.createElement("td"); ruleTd.textContent = v.rule_name;
+    // severity pill
+    const sevTd = document.createElement("td");
+    const pill = document.createElement("span");
+    pill.className = "pill " + (v.severity || "").toLowerCase();
+    pill.textContent = v.severity;
+    sevTd.appendChild(pill);
+    // anomaly dot
+    const anomTd = document.createElement("td");
+    if (v.is_anomaly) { anomTd.innerHTML = '<span class="dot amber"></span>Yes'; }
+    else { anomTd.textContent = "No"; anomTd.style.color = "var(--text-dim)"; }
+    // time
+    const timeTd = document.createElement("td");
+    timeTd.textContent = new Date(v.created_at).toLocaleString();
+    timeTd.className = "mono-cell";
+
+    row.append(srvTd, ruleTd, sevTd, anomTd, timeTd);
     tbody.appendChild(row);
   });
 }
@@ -98,10 +130,15 @@ async function loadDashboard() {
     type: "doughnut",
     data: {
       labels: ["HIGH", "MEDIUM", "LOW"],
-      datasets: [{ data: [data.severity_breakdown.HIGH, data.severity_breakdown.MEDIUM, data.severity_breakdown.LOW], backgroundColor: ["#f0523f", "#f5a623", "#35c98a"], borderWidth: 0, borderColor: "#16161a", borderWidth: 3 }]
+      datasets: [{
+        data: [data.severity_breakdown.HIGH, data.severity_breakdown.MEDIUM, data.severity_breakdown.LOW],
+        backgroundColor: ["#f0523f", "#f5a623", "#35c98a"],
+        borderColor: "#16161a", borderWidth: 3
+      }]
     },
     options: {
-      plugins: { legend: { labels: { color: "#8a8a94", font: { size: 12 }, padding: 16 } } }, cutout: "50%",
+      plugins: { legend: { labels: { color: "#8a8a94", font: { size: 12 }, padding: 16 } } },
+      cutout: "58%",
       onClick: (evt, elements) => {
         if (elements.length > 0) {
           activeFilter = ["HIGH", "MEDIUM", "LOW"][elements[0].index];
