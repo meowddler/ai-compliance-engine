@@ -8,8 +8,18 @@
 <body>
 <div id="nav-placeholder"></div>
 <main>
-  <h2>Audit Log</h2>
+  <div class="page-head">
+    <div>
+      <h2 style="margin-bottom:4px">Audit Log</h2>
+      <p class="page-sub">Append-only record of every state-changing action. Tamper-evident by design.</p>
+    </div>
+  </div>
+
   <div class="panel">
+    <div class="panel-head">
+      <h2>Activity</h2>
+      <span class="hint" id="audit-count"></span>
+    </div>
     <input type="text" id="audit-search" placeholder="Search by user or action..." oninput="filterAudit()">
     <table>
       <thead><tr><th>User</th><th>Action</th><th>Details</th><th>Time</th></tr></thead>
@@ -17,17 +27,32 @@
     </table>
   </div>
 </main>
+
 <script src="js/auth.js"></script>
 <script>
 requireAuth();
 renderNav("audit.html");
 let allAudit = [];
 
+// action -> pill class (color-codes the kind of action)
+function actionClass(action) {
+  const a = (action || "").toLowerCase();
+  if (a.includes("delete")) return "fail";
+  if (a.includes("updat")) return "error";
+  if (a.includes("creat")) return "pass";
+  return "insufficient-evidence";
+}
+
 async function loadAudit() {
   const res = await apiFetch("/audit-log");
   const tbody = document.getElementById("audit-body");
   if (res.status === 403) {
-    tbody.innerHTML = `<tr><td colspan="4">You don't have permission to view this.</td></tr>`;
+    tbody.innerHTML = "";
+    const tr = document.createElement("tr");
+    const td = document.createElement("td");
+    td.colSpan = 4; td.className = "empty-state";
+    td.textContent = "You don't have permission to view this.";
+    tr.appendChild(td); tbody.appendChild(tr);
     document.getElementById("audit-search").style.display = "none";
     return;
   }
@@ -37,11 +62,37 @@ async function loadAudit() {
 
 function renderAudit(list) {
   const tbody = document.getElementById("audit-body");
+  document.getElementById("audit-count").textContent = `${list.length} event${list.length === 1 ? "" : "s"}`;
   if (list.length === 0) { tbody.innerHTML = `<tr><td colspan="4" class="empty-state">No audit activity yet.</td></tr>`; return; }
   tbody.innerHTML = "";
-  list.forEach(e => {
+  list.forEach((e, i) => {
     const row = document.createElement("tr");
-    row.innerHTML = `<td>${e.username}</td><td>${e.action}</td><td>${e.details}</td><td>${new Date(e.timestamp).toLocaleString()}</td>`;
+    row.className = "row-in";
+    row.style.animationDelay = (i * 0.02) + "s";
+
+    // user
+    const userTd = document.createElement("td");
+    userTd.textContent = e.username; userTd.style.fontWeight = "600";
+
+    // action pill (textContent — no HTML injection)
+    const actionTd = document.createElement("td");
+    const pill = document.createElement("span");
+    pill.className = "pill " + actionClass(e.action);
+    pill.textContent = (e.action || "").replace(/_/g, " ");
+    actionTd.appendChild(pill);
+
+    // details — textContent, closes the stored-XSS hole this page used to have
+    const detailsTd = document.createElement("td");
+    detailsTd.textContent = e.details;
+    detailsTd.style.color = "var(--text-muted)";
+    detailsTd.style.fontSize = "12.5px";
+
+    // time — mono
+    const timeTd = document.createElement("td");
+    timeTd.textContent = new Date(e.timestamp).toLocaleString();
+    timeTd.className = "mono-cell";
+
+    row.append(userTd, actionTd, detailsTd, timeTd);
     tbody.appendChild(row);
   });
 }

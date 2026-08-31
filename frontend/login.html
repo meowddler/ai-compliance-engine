@@ -5,13 +5,19 @@
 <title>Login - Compliance Engine</title>
 <link rel="stylesheet" href="css/style.css">
 </head>
-<body>
+<body class="login-body">
 
 <div class="login-wrap">
+  <div class="login-logo"></div>
   <h1>Compliance Engine</h1>
-  <input type="text" id="username" placeholder="Username" value="admin">
-  <input type="password" id="password" placeholder="Password" value="admin123">
-  <button onclick="login()" style="width:100%">Log In</button>
+  <p class="login-tagline">Evidence-driven compliance, evaluated deterministically.</p>
+
+  <label class="field-label">Username</label>
+  <input type="text" id="username" placeholder="Username" value="admin" onkeydown="if(event.key==='Enter')login()">
+  <label class="field-label">Password</label>
+  <input type="password" id="password" placeholder="Password" value="admin123" onkeydown="if(event.key==='Enter')login()">
+
+  <button onclick="login()" style="width:100%;margin-top:8px" id="login-btn">Log In</button>
   <p class="error" id="error-msg"></p>
 </div>
 
@@ -20,24 +26,32 @@
 async function login() {
   const username = document.getElementById("username").value;
   const password = document.getElementById("password").value;
+  const btn = document.getElementById("login-btn");
+  const err = document.getElementById("error-msg");
+  err.innerText = "";
+  btn.disabled = true; btn.textContent = "Signing in...";
 
   const formBody = new URLSearchParams();
   formBody.append("username", username);
   formBody.append("password", password);
 
-  const res = await fetch(`${API_BASE}/auth/login`, {
-    method: "POST",
-    headers: { "Content-Type": "application/x-www-form-urlencoded" },
-    body: formBody
-  });
-  const data = await res.json();
-
-  if (data.access_token) {
-    saveSession(data.access_token, username, data.role || "");
-    // role isn't in the login response yet — we'll fix that below
-    window.location.href = "dashboard.html";
-  } else {
-    document.getElementById("error-msg").innerText = "Login failed — check credentials.";
+  try {
+    const res = await fetch(`${API_BASE}/auth/login`, {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: formBody
+    });
+    const data = await res.json();
+    if (data.access_token) {
+      saveSession(data.access_token, username, data.role || "");
+      window.location.href = "dashboard.html";
+    } else {
+      err.innerText = "Login failed — check credentials.";
+      btn.disabled = false; btn.textContent = "Log In";
+    }
+  } catch (e) {
+    err.innerText = "Could not reach the server.";
+    btn.disabled = false; btn.textContent = "Log In";
   }
 }
 </script>
