@@ -450,6 +450,9 @@ def reset_scans(db: Session = Depends(get_db), current_user: User = Depends(requ
     db.query(Violation).delete()
     db.query(Evidence).delete()
     db.query(Scan).delete()
+    db.commit()
+    log_action(db, current_user.username, "scans_reset", "Cleared all scan history, evidence, and violations")
+    return {"message": "All scans, evidence, and violations cleared"}
 
 
 # Serve the frontend. Must be last — it catches all routes not claimed above.

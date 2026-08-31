@@ -144,12 +144,20 @@ async function loadEvidence(scanId) {
   } catch {}
   if (!ev) { panel.style.display = "none"; return; }
 
+  const fresh = ev.freshness || {};
+  const freshText = fresh.state === "FRESH"
+    ? `Fresh — ${fresh.age_days}d old (limit ${fresh.threshold_days}d)`
+    : fresh.state === "STALE"
+      ? `Stale — ${fresh.age_days}d old, exceeds ${fresh.threshold_days}d`
+      : "Unknown";
+
   const rows = [
     ["File", ev.filename],
     ["SHA-256", ev.sha256],
     ["Size", ev.size_bytes + " bytes"],
     ["Uploaded by", ev.uploaded_by],
     ["Collected", ev.collected_at ? new Date(ev.collected_at).toLocaleString() : "—"],
+    ["Freshness", freshText],
   ];
   rows.forEach(([label, value]) => {
     const l = document.createElement("div"); l.className = "ev-label"; l.textContent = label;
