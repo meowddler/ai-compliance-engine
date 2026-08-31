@@ -475,3 +475,10 @@ input[type="checkbox"] { width: auto; margin: 0; cursor: pointer; accent-color: 
 }
 .ai-explain-body { font-size: 13.5px; line-height: 1.6; color: var(--text); margin-bottom: 10px; }
 .ai-explain-meta { font-family: var(--mono); font-size: 11px; color: var(--text-dim); }
+
+.ai-draft-panel { border-color: var(--accent-deep); max-width: 620px; }
+.draft-badge {
+  display: inline-block; font-size: 11px; font-weight: 700; letter-spacing: 0.05em;
+  color: var(--accent); background: var(--accent-glow); border: 1px solid var(--accent-deep);
+  padding: 4px 10px; border-radius: 6px; margin-bottom: 14px; text-transform: uppercase;
+}

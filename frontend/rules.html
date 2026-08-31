@@ -30,6 +30,18 @@
     </div>
 
     <!-- Create / edit form -->
+    <!-- AI control drafting -->
+    <div class="panel ai-draft-panel">
+      <div class="panel-head">
+        <h2>Draft a Control with AI</h2>
+        <span class="hint">NEMOR Analyst · proposes only, you approve</span>
+      </div>
+      <label class="field-label">Describe the requirement in plain English</label>
+      <input type="text" id="ai-requirement" placeholder="e.g. Servers must not expose RDP without MFA enabled">
+      <button onclick="draftControl()" id="draft-btn">Generate Draft</button>
+      <p id="draft-status" class="status-line"></p>
+      <div id="draft-result" style="display:none"></div>
+    </div>
     <div class="panel rules-form-panel">
       <div class="panel-head">
         <h2 id="form-title">Create New Rule</h2>
@@ -219,6 +231,104 @@ async function submitRule() {
     if (res.ok) { status.className = "status-line ok"; status.innerText = "Rule updated — new version created."; cancelEdit(); loadRules(); }
     else if (res.status === 403) { status.className = "status-line err"; status.innerText = "Not authorized to edit rules."; }
     else { status.className = "status-line err"; status.innerText = "Failed to update rule."; }
+  }
+}
+let currentDraft = null;
+
+async function draftControl() {
+  const req = document.getElementById("ai-requirement").value.trim();
+  const status = document.getElementById("draft-status");
+  const result = document.getElementById("draft-result");
+  const btn = document.getElementById("draft-btn");
+
+  if (!req) { status.className = "status-line err"; status.innerText = "Describe the requirement first."; return; }
+
+  btn.disabled = true; btn.textContent = "Thinking...";
+  status.className = "status-line"; status.innerText = "The model is drafting a control. This can take up to a minute.";
+  result.style.display = "none";
+
+  try {
+    const res = await apiFetch("/ai/draft-control", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ requirement: req })
+    });
+    const data = await res.json();
+
+    if (data.status !== "DRAFT" || !data.draft) {
+      status.className = "status-line err";
+      status.innerText = data.error ? `Draft rejected: ${data.error}` : "Could not produce a valid draft.";
+      btn.disabled = false; btn.textContent = "Generate Draft";
+      return;
+    }
+
+    currentDraft = data;
+    const d = data.draft;
+    result.innerHTML = "";
+
+    const head = document.createElement("div");
+    head.className = "draft-badge";
+    head.textContent = "DRAFT — not active until approved";
+    result.appendChild(head);
+
+    const grid = document.createElement("div");
+    grid.className = "evidence-grid";
+    [["Name", d.name], ["Description", d.description], ["Framework", d.framework],
+     ["Severity", d.severity], ["Remediation", d.remediation],
+     ["Condition", JSON.stringify(d.condition)],
+     ["Model reasoning", d.reasoning || "—"]].forEach(([l, v]) => {
+      const lab = document.createElement("div"); lab.className = "ev-label"; lab.textContent = l;
+      const val = document.createElement("div"); val.className = "ev-value";
+      if (l === "Condition") val.classList.add("ev-hash");
+      val.textContent = v;
+      grid.appendChild(lab); grid.appendChild(val);
+    });
+    result.appendChild(grid);
+
+    const actions = document.createElement("div");
+    actions.className = "ev-verify-row";
+    const approve = document.createElement("button");
+    approve.textContent = "Approve & Create Control";
+    approve.onclick = approveDraft;
+    const discard = document.createElement("button");
+    discard.className = "action-btn"; discard.textContent = "Discard";
+    discard.onclick = () => { result.style.display = "none"; currentDraft = null; status.innerText = ""; };
+    actions.appendChild(approve); actions.appendChild(discard);
+    result.appendChild(actions);
+
+    const meta = document.createElement("div");
+    meta.className = "ai-explain-meta";
+    meta.style.marginTop = "10px";
+    meta.textContent = `${data.model} · prompt ${data.prompt_version} · ${data.latency_ms}ms · interaction #${data.interaction_id}`;
+    result.appendChild(meta);
+
+    result.style.display = "block";
+    status.className = "status-line ok"; status.innerText = "Draft ready for review.";
+  } catch (e) {
+    status.className = "status-line err"; status.innerText = "Failed to reach the AI service.";
+  }
+  btn.disabled = false; btn.textContent = "Generate Draft";
+}
+
+async function approveDraft() {
+  if (!currentDraft) return;
+  const d = currentDraft.draft;
+  const status = document.getElementById("draft-status");
+  const res = await apiFetch("/ai/approve-draft", {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      name: d.name, description: d.description, framework: d.framework,
+      severity: d.severity, remediation: d.remediation, condition: d.condition,
+      interaction_id: currentDraft.interaction_id
+    })
+  });
+  if (res.ok) {
+    status.className = "status-line ok"; status.innerText = "Control approved and created.";
+    document.getElementById("draft-result").style.display = "none";
+    document.getElementById("ai-requirement").value = "";
+    currentDraft = null;
+    loadRules();
+  } else {
+    status.className = "status-line err"; status.innerText = "Failed to create the control.";
   }
 }
 loadRules();

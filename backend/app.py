@@ -200,6 +200,45 @@ def ai_draft_control(req: DraftControlRequest, db: Session = Depends(get_db), cu
     available = ["server_id", "port", "port_exposed", "mfa_enabled", "last_login_days", "failed_logins"]
     return draft_control(db, requirement_text=req.requirement, available_fields=available, current_user=current_user)
 
+class ApproveDraftRequest(BaseModel):
+    name: str
+    description: str
+    framework: str
+    severity: str
+    remediation: str
+    condition: list
+    interaction_id: int | None = None
+
+
+@app.post("/ai/approve-draft")
+def approve_draft(req: ApproveDraftRequest, db: Session = Depends(get_db), current_user: User = Depends(require_role(["Admin"]))):
+    """Turn a reviewed AI draft into a real control.
+
+    The AI never reaches this point on its own — a human explicitly approves,
+    and the approval is audit-logged with the AI interaction it came from.
+    """
+    db_rule = Rule(
+        name=req.name,
+        organization_id=current_user.organization_id,
+        description=req.description,
+        framework=req.framework,
+        severity=req.severity,
+        remediation=req.remediation,
+        condition=json.dumps(req.condition),
+        active=True,
+        version=1,
+        is_current=True,
+    )
+    db.add(db_rule)
+    db.commit()
+    db.refresh(db_rule)
+
+    log_action(
+        db, current_user.username, "rule_created_from_ai_draft",
+        f"Approved AI-drafted control '{db_rule.name}' (ai_interaction={req.interaction_id})"
+    )
+    return db_rule
+
 @app.post("/violations/{violation_id}/explain")
 def explain_violation(violation_id: int, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
     v = db.query(Violation).filter(
