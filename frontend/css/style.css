@@ -447,8 +447,9 @@ input[type="checkbox"] { width: auto; margin: 0; cursor: pointer; accent-color: 
 /* ============================================================
    Dashboard layout
    ============================================================ */
-.dash-grid { display: grid; grid-template-columns: 340px 1fr; gap: 22px; align-items: start; }
-@media (max-width: 1000px) { .dash-grid { grid-template-columns: 1fr; } }
+.dash-grid { display: block; }
+.chart-panel { max-width: 380px; }
+.chart-panel canvas { max-height: 260px; }
 .chart-panel { position: sticky; top: 24px; }
 .chart-panel canvas { max-height: 260px; }
 
