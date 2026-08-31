@@ -179,6 +179,23 @@ def get_violations(db: Session = Depends(get_db), current_user: User = Depends(g
 def get_scans(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
     return db.query(Scan).filter(Scan.organization_id == current_user.organization_id).all()
 
+@app.get("/scans/{scan_id}/evidence")
+def get_scan_evidence(scan_id: int, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    ev = db.query(Evidence).filter(
+        Evidence.scan_id == scan_id,
+        Evidence.organization_id == current_user.organization_id
+    ).first()
+    if not ev:
+        return None
+    return {
+        "id": ev.id,
+        "filename": ev.filename,
+        "sha256": ev.sha256,
+        "size_bytes": ev.size_bytes,
+        "uploaded_by": ev.uploaded_by,
+        "collected_at": ev.collected_at.isoformat() if ev.collected_at else None,
+    }
+
 
 @app.get("/rules")
 def get_rules(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
@@ -372,11 +389,11 @@ def delete_rule(rule_id: int, db: Session = Depends(get_db), current_user: User 
 
 @app.delete("/scans/reset")
 def reset_scans(db: Session = Depends(get_db), current_user: User = Depends(require_role(["Admin"]))):
+    # Delete in FK order: evidence and violations reference scans, so they go first.
+    db.query(Evidence).delete()
     db.query(Violation).delete()
     db.query(Scan).delete()
     db.commit()
-    log_action(db, current_user.username, "scans_reset", "Cleared all scan history and violations")
-    return {"message": "All scans and violations cleared"}
 
 
 # Serve the frontend. Must be last — it catches all routes not claimed above.

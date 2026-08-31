@@ -49,6 +49,15 @@
     </table>
   </div>
 
+  <!-- Evidence panel (shown with scan detail) -->
+  <div class="panel evidence-panel" id="evidence-panel" style="display:none">
+    <div class="panel-head">
+      <h2>Evidence</h2>
+      <span class="hint">tamper-evident source record</span>
+    </div>
+    <div class="evidence-grid" id="evidence-grid"></div>
+  </div>
+
   <!-- Findings detail -->
   <div class="panel" id="scan-detail-panel" style="display:none">
     <div class="panel-head">
@@ -77,7 +86,6 @@ function textCell(value, className) {
   return td;
 }
 
-// A status pill cell (PASS/FAIL/ERROR/INSUFFICIENT_EVIDENCE), built as text.
 function pillCell(value) {
   const td = document.createElement("td");
   const span = document.createElement("span");
@@ -125,13 +133,69 @@ function filterScans() {
   renderScans(allScans.filter(s => (s.filename || "").toLowerCase().includes(q)));
 }
 
+async function loadEvidence(scanId) {
+  const panel = document.getElementById("evidence-panel");
+  const grid = document.getElementById("evidence-grid");
+  grid.innerHTML = "";
+  let ev = null;
+  try {
+    const res = await apiFetch(`/scans/${scanId}/evidence`);
+    if (res.ok) ev = await res.json();
+  } catch {}
+  if (!ev) { panel.style.display = "none"; return; }
+
+  const rows = [
+    ["File", ev.filename],
+    ["SHA-256", ev.sha256],
+    ["Size", ev.size_bytes + " bytes"],
+    ["Uploaded by", ev.uploaded_by],
+    ["Collected", ev.collected_at ? new Date(ev.collected_at).toLocaleString() : "—"],
+  ];
+  rows.forEach(([label, value]) => {
+    const l = document.createElement("div"); l.className = "ev-label"; l.textContent = label;
+    const v = document.createElement("div"); v.className = "ev-value";
+    if (label === "SHA-256") v.classList.add("ev-hash");
+    v.textContent = value;
+    grid.appendChild(l); grid.appendChild(v);
+  });
+
+  // verify button + result
+  const spacer = document.createElement("div");
+  const actions = document.createElement("div");
+  actions.className = "ev-verify-row";
+  const btn = document.createElement("button");
+  btn.className = "action-btn"; btn.textContent = "Verify Integrity";
+  const result = document.createElement("span");
+  result.className = "ev-verify-result";
+  btn.onclick = async () => {
+    btn.disabled = true; btn.textContent = "Verifying...";
+    result.textContent = "";
+    try {
+      const res = await apiFetch(`/evidence/${ev.id}/verify`);
+      const data = await res.json();
+      result.className = "ev-verify-result " + (data.status === "INTACT" ? "ok" : "bad");
+      result.innerHTML = (data.status === "INTACT"
+        ? '<span class="dot green"></span>INTACT — hash matches'
+        : '<span class="dot red"></span>' + data.status + ' — hash mismatch');
+    } catch {
+      result.className = "ev-verify-result bad"; result.textContent = "Verify failed.";
+    }
+    btn.disabled = false; btn.textContent = "Verify Integrity";
+  };
+  actions.appendChild(btn); actions.appendChild(result);
+  grid.appendChild(spacer); grid.appendChild(actions);
+
+  panel.style.display = "block";
+}
+
 function showScanDetail(scan) {
   const panel = document.getElementById("scan-detail-panel");
   document.getElementById("scan-detail-title").innerText = `Scan #${scan.id} — ${scan.filename}`;
   const tbody = document.getElementById("scan-detail-body");
   const findings = allViolations.filter(v => v.scan_id === scan.id);
 
-  // Status summary counts
+  loadEvidence(scan.id);   // NEW — surface the evidence record for this scan
+
   const counts = {};
   findings.forEach(v => { const s = v.status || "FAIL"; counts[s] = (counts[s] || 0) + 1; });
   const summary = document.getElementById("status-summary");
@@ -160,26 +224,21 @@ function showScanDetail(scan) {
       row.appendChild(pillCell(v.status || "FAIL"));
       row.appendChild(textCell(v.severity, v.severity));
       const anomalyTd = document.createElement("td");
-      if (v.is_anomaly) {
-        anomalyTd.innerHTML = '<span class="dot amber"></span>Yes';
-      } else {
-        anomalyTd.textContent = "No";
-      }
+      if (v.is_anomaly) { anomalyTd.innerHTML = '<span class="dot amber"></span>Yes'; }
+      else { anomalyTd.textContent = "No"; }
       row.appendChild(anomalyTd);
       tbody.appendChild(row);
     });
   }
   panel.style.display = "block";
-  panel.scrollIntoView({ behavior: "smooth" });
+  document.getElementById("evidence-panel").scrollIntoView({ behavior: "smooth", block: "nearest" });
 }
 
-// file name display
 document.getElementById("fileInput").addEventListener("change", (e) => {
   const name = e.target.files.length ? e.target.files[0].name : "No file selected";
   document.getElementById("file-name").textContent = name;
 });
 
-// drag & drop
 const zone = document.getElementById("upload-zone");
 ["dragover", "dragenter"].forEach(ev => zone.addEventListener(ev, e => { e.preventDefault(); zone.classList.add("drag"); }));
 ["dragleave", "drop"].forEach(ev => zone.addEventListener(ev, e => { e.preventDefault(); zone.classList.remove("drag"); }));
@@ -214,6 +273,7 @@ async function resetScans() {
     status.className = "status-line ok";
     status.innerText = "Scan history cleared.";
     document.getElementById("scan-detail-panel").style.display = "none";
+    document.getElementById("evidence-panel").style.display = "none";
     loadScans();
   } else if (res.status === 403) { status.className = "status-line err"; status.innerText = "Not authorized — Admin only."; }
   else { status.className = "status-line err"; status.innerText = "Failed to reset."; }

@@ -447,6 +447,20 @@ input[type="checkbox"] { width: auto; margin: 0; cursor: pointer; accent-color: 
 /* ============================================================
    Dashboard layout
    ============================================================ */
-.dash-grid { display: block; }
-.chart-panel { max-width: 380px; }
+.dash-grid { display: grid; grid-template-columns: 340px 1fr; gap: 22px; align-items: start; }
+@media (max-width: 1000px) { .dash-grid { grid-template-columns: 1fr; } }
+.chart-panel { position: sticky; top: 24px; }
 .chart-panel canvas { max-height: 260px; }
+
+/* ============================================================
+   Evidence panel (Phase 2)
+   ============================================================ */
+.evidence-panel { border-color: var(--accent-deep); box-shadow: 0 0 0 1px var(--accent-glow); }
+.evidence-grid { display: grid; grid-template-columns: 130px 1fr; gap: 10px 18px; align-items: center; }
+.ev-label { font-size: 11px; font-weight: 600; color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.04em; }
+.ev-value { font-size: 13px; color: var(--text); }
+.ev-hash { font-family: var(--mono); font-size: 12px; color: var(--accent); word-break: break-all; }
+.ev-verify-row { display: flex; align-items: center; gap: 14px; margin-top: 4px; }
+.ev-verify-result { display: inline-flex; align-items: center; font-size: 12.5px; font-weight: 600; }
+.ev-verify-result.ok  { color: var(--low); }
+.ev-verify-result.bad { color: var(--high); }

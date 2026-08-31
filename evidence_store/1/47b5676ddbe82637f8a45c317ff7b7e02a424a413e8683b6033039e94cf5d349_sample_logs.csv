@@ -1,0 +1,6 @@
+server_id,port,port_exposed,mfa_enabled,last_login_days,failed_logins
+srv-001,22,true,false,3,1
+srv-002,443,false,true,45,0
+srv-003,3389,true,false,60,12
+srv-004,80,true,true,5,0
+srv-005,22,true,true,90,3
