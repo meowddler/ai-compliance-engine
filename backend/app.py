@@ -13,7 +13,6 @@ from backend.database import get_db
 from backend.models.models import Violation, Scan, Rule, User, Framework, Evidence, ScanRecord
 from backend.schemas.schemas import RuleCreate, RuleUpdate
 from backend.core.auth import verify_password, create_access_token
-from backend.core.dependencies import require_role
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from backend.utils.report_generator import generate_compliance_report
@@ -25,7 +24,25 @@ from backend.ai.service import explain_finding
 from backend.models.models import AIInteraction
 from pydantic import BaseModel
 
-app = FastAPI()
+TAGS_METADATA = [
+    {"name": "Auth", "description": "Login and token issue."},
+    {"name": "Dashboard", "description": "Compliance posture and summary metrics."},
+    {"name": "Scans", "description": "Upload evidence and review scan history."},
+    {"name": "Findings", "description": "Evaluation results, lifecycle workflow, and provenance."},
+    {"name": "Evidence", "description": "Stored evidence and integrity verification."},
+    {"name": "Rules", "description": "Compliance controls and framework clauses."},
+    {"name": "AI", "description": "Explanations and drafted controls. AI proposes; the deterministic engine decides."},
+    {"name": "Reports", "description": "Generated compliance reports."},
+    {"name": "Audit", "description": "Append-only audit trail."},
+    {"name": "System", "description": "Health and service information."},
+]
+
+app = FastAPI(
+    title="AI Compliance Engine",
+    description="Evidence-driven compliance evaluation with deterministic controls and an AI assistance layer.",
+    version="0.4.0",
+    openapi_tags=TAGS_METADATA,
+)
 
 def evidence_freshness(collected_at):
     """Classify evidence age. Stale evidence should not count as current proof
@@ -44,12 +61,12 @@ app.add_middleware(
     allow_headers=["Authorization", "Content-Type"],
 )
 
-@app.get("/")
+@app.get("/", tags=["System"])
 def read_root():
     return {"message": "Compliance engine is alive"}
 
 
-@app.post("/auth/login")
+@app.post("/auth/login", tags=["Auth"])
 def login(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_db)):
     user = db.query(User).filter(User.username == form_data.username).first()
     if not user or not verify_password(form_data.password, user.hashed_password):
@@ -88,7 +105,7 @@ def build_anomaly_map(df):
     return anomaly_map
 
 
-@app.post("/upload-logs")
+@app.post("/upload-logs", tags=["Scans"])
 async def upload_logs(file: UploadFile = File(...), db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
     # --- Validate input up front, before creating anything in the DB. ---
     contents = await file.read()
@@ -118,7 +135,14 @@ async def upload_logs(file: UploadFile = File(...), db: Session = Depends(get_db
     # If any of this fails, we haven't created a scan record, so no ghost scan
     # can be left behind.
     try:
-        active_rules = db.query(Rule).filter(Rule.active == True, Rule.is_current == True).all()
+        # Org filter is essential: without it a scan would be evaluated against
+        # every tenant's rules, leaking one organisation's detection logic into
+        # another's results.
+        active_rules = db.query(Rule).filter(
+            Rule.organization_id == current_user.organization_id,
+            Rule.active == True,
+            Rule.is_current == True,
+        ).all()
         rule_results = evaluate_dataframe(df, active_rules)
         # name -> exact rule id (this version), so each finding pins the rule
         # version that actually produced it, for later reproducibility.
@@ -213,7 +237,7 @@ class DraftControlRequest(BaseModel):
     requirement: str
 
 
-@app.post("/ai/draft-control")
+@app.post("/ai/draft-control", tags=["AI"])
 def ai_draft_control(req: DraftControlRequest, db: Session = Depends(get_db), current_user: User = Depends(require_role(["Admin"]))):
     from backend.ai.service import draft_control
     available = ["server_id", "port", "port_exposed", "mfa_enabled", "last_login_days", "failed_logins"]
@@ -229,7 +253,7 @@ class ApproveDraftRequest(BaseModel):
     interaction_id: int | None = None
 
 
-@app.post("/ai/approve-draft")
+@app.post("/ai/approve-draft", tags=["AI"])
 def approve_draft(req: ApproveDraftRequest, db: Session = Depends(get_db), current_user: User = Depends(require_role(["Admin"]))):
     """Turn a reviewed AI draft into a real control.
 
@@ -258,7 +282,7 @@ def approve_draft(req: ApproveDraftRequest, db: Session = Depends(get_db), curre
     )
     return db_rule
 
-@app.post("/violations/{violation_id}/explain")
+@app.post("/violations/{violation_id}/explain", tags=["AI"])
 def explain_violation(violation_id: int, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
     v = db.query(Violation).filter(
         Violation.id == violation_id,
@@ -272,7 +296,7 @@ def explain_violation(violation_id: int, db: Session = Depends(get_db), current_
 
     return explain_finding(db, violation=v, rule=rule, evidence=evidence, current_user=current_user)
 
-@app.get("/violations")
+@app.get("/violations", tags=["Findings"])
 def get_violations(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
     return db.query(Violation).filter(Violation.organization_id == current_user.organization_id).all()
 
@@ -282,7 +306,7 @@ class LifecycleUpdateRequest(BaseModel):
     note: str | None = None
 
 
-@app.post("/violations/{violation_id}/lifecycle")
+@app.post("/violations/{violation_id}/lifecycle", tags=["Findings"])
 def update_finding_lifecycle(violation_id: int, req: LifecycleUpdateRequest,
                              db: Session = Depends(get_db),
                              current_user: User = Depends(get_current_user)):
@@ -325,7 +349,7 @@ def update_finding_lifecycle(violation_id: int, req: LifecycleUpdateRequest,
             "updated_by": v.lifecycle_updated_by}
 
 
-@app.get("/violations/{violation_id}/history")
+@app.get("/violations/{violation_id}/history", tags=["Findings"])
 def get_finding_history(violation_id: int, db: Session = Depends(get_db),
                         current_user: User = Depends(get_current_user)):
     """Full lifecycle history for a finding — append-only, never rewritten."""
@@ -355,7 +379,7 @@ def get_finding_history(violation_id: int, db: Session = Depends(get_db),
     }
 
 
-@app.get("/violations/{violation_id}/provenance")
+@app.get("/violations/{violation_id}/provenance", tags=["Findings"])
 def get_violation_provenance(violation_id: int, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
     v = db.query(Violation).filter(
         Violation.id == violation_id,
@@ -394,11 +418,11 @@ def get_violation_provenance(violation_id: int, db: Session = Depends(get_db), c
     }
 
 
-@app.get("/scans")
+@app.get("/scans", tags=["Scans"])
 def get_scans(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
     return db.query(Scan).filter(Scan.organization_id == current_user.organization_id).all()
 
-@app.get("/scans/{scan_id}/evidence")
+@app.get("/scans/{scan_id}/evidence", tags=["Evidence"])
 def get_scan_evidence(scan_id: int, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
     ev = db.query(Evidence).filter(
         Evidence.scan_id == scan_id,
@@ -417,14 +441,14 @@ def get_scan_evidence(scan_id: int, db: Session = Depends(get_db), current_user:
     }
 
 
-@app.get("/rules")
+@app.get("/rules", tags=["Rules"])
 def get_rules(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
     return db.query(Rule).filter(
         Rule.organization_id == current_user.organization_id,
         Rule.is_current == True
     ).all()
 
-@app.get("/frameworks")
+@app.get("/frameworks", tags=["Rules"])
 def get_frameworks(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
     frameworks = db.query(Framework).order_by(Framework.name, Framework.clause_id).all()
     return [
@@ -439,7 +463,7 @@ def get_frameworks(db: Session = Depends(get_db), current_user: User = Depends(g
         for f in frameworks
     ]
 
-@app.get("/evidence/{evidence_id}/verify")
+@app.get("/evidence/{evidence_id}/verify", tags=["Evidence"])
 def verify_evidence(evidence_id: int, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
     ev = db.query(Evidence).filter(
         Evidence.id == evidence_id,
@@ -464,7 +488,7 @@ def verify_evidence(evidence_id: int, db: Session = Depends(get_db), current_use
     }
 
 
-@app.post("/rules")
+@app.post("/rules", tags=["Rules"])
 def create_rule(rule: RuleCreate, db: Session = Depends(get_db), current_user: User = Depends(require_role(["Admin"]))):
     db_rule = Rule(
         name=rule.name,
@@ -483,14 +507,14 @@ def create_rule(rule: RuleCreate, db: Session = Depends(get_db), current_user: U
     return db_rule
 
 
-@app.put("/rules/{rule_id}")
+@app.put("/rules/{rule_id}", tags=["Rules"])
 def update_rule(rule_id: int, rule: RuleUpdate, db: Session = Depends(get_db), current_user: User = Depends(require_role(["Admin", "Auditor"]))):
     db_rule = db.query(Rule).filter(
         Rule.id == rule_id,
         Rule.organization_id == current_user.organization_id
     ).first()
     if not db_rule:
-        return {"error": "Rule not found"}
+        raise HTTPException(status_code=404, detail="Rule not found")
 
     update_data = rule.dict(exclude_unset=True)
     if "condition" in update_data:
@@ -538,7 +562,7 @@ def update_rule(rule_id: int, rule: RuleUpdate, db: Session = Depends(get_db), c
     return new_rule
 
 
-@app.get("/dashboard/summary")
+@app.get("/dashboard/summary", tags=["Dashboard"])
 def dashboard_summary(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
     org_id = current_user.organization_id
     total_scans = db.query(Scan).filter(Scan.organization_id == org_id).count()
@@ -601,7 +625,7 @@ def dashboard_summary(db: Session = Depends(get_db), current_user: User = Depend
         ]
     }
 
-@app.post("/reports/generate")
+@app.post("/reports/generate", tags=["Reports"])
 def generate_report(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
     summary = dashboard_summary(db, current_user)  # reuse the same logic you already built
     pdf_buffer = generate_compliance_report(summary)
@@ -615,30 +639,41 @@ def generate_report(db: Session = Depends(get_db), current_user: User = Depends(
     )
 
 
-@app.get("/audit-log")
+@app.get("/audit-log", tags=["Audit"])
 def get_audit_log(db: Session = Depends(get_db), current_user: User = Depends(require_role(["Admin", "Auditor"]))):
     from backend.models.models import AuditLog
     return db.query(AuditLog).order_by(AuditLog.timestamp.desc()).all()
 
 
-@app.delete("/rules/{rule_id}")
+@app.delete("/rules/{rule_id}", tags=["Rules"])
 def delete_rule(rule_id: int, db: Session = Depends(get_db), current_user: User = Depends(require_role(["Admin"]))):
-    db_rule = db.query(Rule).filter(Rule.id == rule_id).first()
+    db_rule = db.query(Rule).filter(
+        Rule.id == rule_id,
+        Rule.organization_id == current_user.organization_id,
+    ).first()
     if not db_rule:
-        return {"error": "Rule not found"}
+        raise HTTPException(status_code=404, detail="Rule not found")
     rule_name = db_rule.name
     db.delete(db_rule)
     db.commit()
     log_action(db, current_user.username, "rule_deleted", f"Deleted rule: {rule_name}")
     return {"message": "Rule deleted"}
 
-@app.delete("/scans/reset")
+@app.delete("/scans/reset", tags=["Scans"])
 def reset_scans(db: Session = Depends(get_db), current_user: User = Depends(require_role(["Admin"]))):
-    # Delete in FK dependency order: violations reference evidence and scans,
-    # evidence references scans, so children go before parents.
-    db.query(Violation).delete()
-    db.query(Evidence).delete()
-    db.query(Scan).delete()
+    # Scoped to the caller's organisation — an admin must never be able to
+    # destroy another tenant's data. Deleted in FK dependency order: children
+    # (history, findings, records, evidence) before parents (scans).
+    from backend.models.models import FindingHistory
+    org_id = current_user.organization_id
+
+    finding_ids = [v.id for v in db.query(Violation).filter(Violation.organization_id == org_id).all()]
+    if finding_ids:
+        db.query(FindingHistory).filter(FindingHistory.violation_id.in_(finding_ids)).delete(synchronize_session=False)
+    db.query(Violation).filter(Violation.organization_id == org_id).delete(synchronize_session=False)
+    db.query(ScanRecord).filter(ScanRecord.organization_id == org_id).delete(synchronize_session=False)
+    db.query(Evidence).filter(Evidence.organization_id == org_id).delete(synchronize_session=False)
+    db.query(Scan).filter(Scan.organization_id == org_id).delete(synchronize_session=False)
     db.commit()
     log_action(db, current_user.username, "scans_reset", "Cleared all scan history, evidence, and violations")
     return {"message": "All scans, evidence, and violations cleared"}
