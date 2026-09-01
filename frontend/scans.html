@@ -65,7 +65,7 @@
     </div>
     <div class="status-summary" id="status-summary"></div>
     <table>
-      <thead><tr><th>Server</th><th>Rule</th><th>Status</th><th>Severity</th><th>Anomaly</th><th>AI</th></tr></thead>
+      <thead><tr><th>Server</th><th>Rule</th><th>Status</th><th>Severity</th><th>Lifecycle</th><th>Anomaly</th><th>AI</th></tr></thead>
       <tbody id="scan-detail-body"></tbody>
     </table>
   </div>
@@ -219,7 +219,7 @@ function showScanDetail(scan) {
   if (findings.length === 0) {
     const tr = document.createElement("tr");
     const td = document.createElement("td");
-    td.colSpan = 6; td.className = "empty-state";
+    td.colSpan = 7; td.className = "empty-state";
     td.textContent = "No findings — clean scan!";
     tr.appendChild(td); tbody.appendChild(tr);
   } else {
@@ -231,6 +231,48 @@ function showScanDetail(scan) {
       row.appendChild(textCell(v.rule_name));
       row.appendChild(pillCell(v.status || "FAIL"));
       row.appendChild(textCell(v.severity, v.severity));
+      // Lifecycle — how the organisation is handling this finding, distinct
+      // from the engine's verdict in the Status column.
+      const lcTd = document.createElement("td");
+      const lcSelect = document.createElement("select");
+      lcSelect.className = "lifecycle-select";
+      const cur = v.lifecycle || "OPEN";
+      const opt = document.createElement("option");
+      opt.value = cur; opt.textContent = cur.replace(/_/g, " "); opt.selected = true;
+      lcSelect.appendChild(opt);
+      lcSelect.dataset.loaded = "false";
+      lcSelect.onmousedown = async (e) => {
+        if (lcSelect.dataset.loaded === "true") return;
+        e.preventDefault();
+        const r = await apiFetch(`/violations/${v.id}/history`);
+        const d = await r.json();
+        (d.allowed_next || []).forEach(s => {
+          const o = document.createElement("option");
+          o.value = s; o.textContent = s.replace(/_/g, " ");
+          lcSelect.appendChild(o);
+        });
+        lcSelect.dataset.loaded = "true";
+        lcSelect.size = 0;
+      };
+      lcSelect.onchange = async () => {
+        const target = lcSelect.value;
+        if (target === cur) return;
+        const r = await apiFetch(`/violations/${v.id}/lifecycle`, {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ to_state: target })
+        });
+        if (r.ok) {
+          v.lifecycle = target;
+          showScanDetail(scan);   // re-render with the new state
+        } else {
+          const err = await r.json();
+          alert(err.detail || "Could not change state.");
+          lcSelect.value = cur;
+        }
+      };
+      lcTd.appendChild(lcSelect);
+      row.appendChild(lcTd);
+      
       const anomalyTd = document.createElement("td");
       if (v.is_anomaly) { anomalyTd.innerHTML = '<span class="dot amber"></span>Yes'; }
       else { anomalyTd.textContent = "No"; }
