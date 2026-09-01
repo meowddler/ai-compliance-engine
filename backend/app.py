@@ -10,7 +10,7 @@ from backend.core.dependencies import require_role, get_current_user
 from backend.rules.rule_engine import evaluate_dataframe
 from backend.ml_engine.anomaly_detector import detect_anomalies
 from backend.database import get_db
-from backend.models.models import Violation, Scan, Rule, User, Framework, Evidence
+from backend.models.models import Violation, Scan, Rule, User, Framework, Evidence, ScanRecord
 from backend.schemas.schemas import RuleCreate, RuleUpdate
 from backend.core.auth import verify_password, create_access_token
 from backend.core.dependencies import require_role
@@ -124,7 +124,13 @@ async def upload_logs(file: UploadFile = File(...), db: Session = Depends(get_db
         # version that actually produced it, for later reproducibility.
         rule_id_by_name = {r.name: r.id for r in active_rules}
 
-        df_with_anomalies = detect_anomalies(df)
+        # Baseline = this organization's historical observations, not this batch.
+        history_rows = db.query(ScanRecord).filter(
+            ScanRecord.organization_id == current_user.organization_id
+        ).all()
+        history_df = pd.DataFrame([json.loads(r.features) for r in history_rows]) if history_rows else None
+
+        df_with_anomalies, anomaly_meta = detect_anomalies(df, history_df)
         anomaly_map = build_anomaly_map(df_with_anomalies)
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Scan processing failed: {exc}")
@@ -150,6 +156,18 @@ async def upload_logs(file: UploadFile = File(...), db: Session = Depends(get_db
         )
         db.add(evidence)
         db.flush()   # assign evidence.id so violations can reference it
+        # Persist each observed row so future scans have a baseline to fit on.
+        from backend.ml_engine.anomaly_detector import extract_features, DETECTOR_VERSION
+        for _, raw_row in df_with_anomalies.iterrows():
+            db.add(ScanRecord(
+                organization_id=current_user.organization_id,
+                scan_id=scan.id,
+                server_id=str(raw_row.get("server_id", "unknown")),
+                features=json.dumps(extract_features(raw_row), default=str),
+                is_anomaly=bool(raw_row.get("is_anomaly", False)),
+                anomaly_score=str(raw_row.get("anomaly_score")) if raw_row.get("anomaly_score") is not None else None,
+                detector_version=DETECTOR_VERSION,
+            ))
 
         for result in rule_results:
             server = result["server_id"]
@@ -188,7 +206,8 @@ async def upload_logs(file: UploadFile = File(...), db: Session = Depends(get_db
         raise HTTPException(status_code=500, detail=f"Failed to save scan: {exc}")
 
     log_action(db, current_user.username, "scan_run", f"Scanned {file.filename} ({len(df)} rows)")
-    return {"scan_id": scan.id, "filename": file.filename, "rows_scanned": len(df), "findings": rule_results}
+    return {"scan_id": scan.id, "filename": file.filename, "rows_scanned": len(df),
+            "anomaly_detection": anomaly_meta, "findings": rule_results}
 
 class DraftControlRequest(BaseModel):
     requirement: str

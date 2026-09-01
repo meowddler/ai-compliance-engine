@@ -139,3 +139,23 @@ class AIInteraction(Base):
     error = Column(String, nullable=True)
     requested_by = Column(String)              # username
     created_at = Column(DateTime, default=datetime.utcnow)
+
+class ScanRecord(Base):
+    """One observed row from a scan — the raw feature snapshot for a server.
+
+    Kept so anomaly detection can be fitted against an organization's HISTORY
+    rather than the single uploaded batch. Batch-relative fitting made the same
+    server 'normal' in one file and 'anomalous' in another (audit S2-01).
+    """
+    __tablename__ = "scan_records"
+
+    id = Column(Integer, primary_key=True, index=True)
+    organization_id = Column(Integer, ForeignKey("organizations.id"), index=True, nullable=True)
+    scan_id = Column(Integer, ForeignKey("scans.id"), index=True)
+
+    server_id = Column(String, index=True)
+    features = Column(Text)          # JSON snapshot of the feature columns
+    is_anomaly = Column(Boolean, default=False)
+    anomaly_score = Column(String, nullable=True)
+    detector_version = Column(String, nullable=True)   # which model scored it
+    created_at = Column(DateTime, default=datetime.utcnow)
