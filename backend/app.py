@@ -480,7 +480,32 @@ def dashboard_summary(db: Session = Depends(get_db), current_user: User = Depend
         .all()
     )
 
+    # Posture is scoped to the LATEST scan: it reflects current standing, not a
+    # sum over history. Re-scanning unchanged evidence yields the same score,
+    # and remediation improves it.
+    from backend.utils.posture import compute_posture
+    latest_scan = db.query(Scan).filter(Scan.organization_id == org_id).order_by(Scan.id.desc()).first()
+    if latest_scan:
+        latest_findings = db.query(Violation).filter(
+            Violation.organization_id == org_id,
+            Violation.scan_id == latest_scan.id
+        ).all()
+        # Findings only record non-PASS results, so passes are inferred from
+        # the number of evaluations that produced no finding.
+        records = db.query(ScanRecord).filter(ScanRecord.scan_id == latest_scan.id).count()
+        active_rule_count = db.query(Rule).filter(
+            Rule.organization_id == org_id, Rule.active == True, Rule.is_current == True
+        ).count()
+        total_evaluations = records * active_rule_count
+        non_pass = [{"status": v.status or "FAIL", "severity": v.severity} for v in latest_findings]
+        passes = max(0, total_evaluations - len(non_pass))
+        results_for_posture = non_pass + [{"status": "PASS", "severity": "MEDIUM"}] * passes
+        posture = compute_posture(results_for_posture)
+    else:
+        posture = compute_posture([])
+
     return {
+        "posture": posture,
         "total_scans": total_scans,
         "total_violations": total_violations,
         "severity_breakdown": {"HIGH": high, "MEDIUM": medium, "LOW": low},
