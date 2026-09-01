@@ -482,3 +482,7 @@ input[type="checkbox"] { width: auto; margin: 0; cursor: pointer; accent-color: 
   color: var(--accent); background: var(--accent-glow); border: 1px solid var(--accent-deep);
   padding: 4px 10px; border-radius: 6px; margin-bottom: 14px; text-transform: uppercase;
 }
+
+.posture-card { min-width: 200px; }
+.posture-card h3::after { content: "%"; font-size: 18px; color: var(--text-muted); margin-left: 2px; }
+.posture-detail { font-size: 11px; color: var(--text-dim); margin-top: 6px; font-family: var(--mono); }

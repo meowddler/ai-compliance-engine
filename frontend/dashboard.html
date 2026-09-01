@@ -17,6 +17,11 @@
   </div>
 
   <div class="cards">
+    <div class="card posture-card">
+      <h3 id="posture-score">—</h3>
+      <p>Compliance Posture</p>
+      <div class="posture-detail" id="posture-detail"></div>
+    </div>
     <div class="card"><h3 id="scans">0</h3><p>Total Scans</p></div>
     <div class="card"><h3 id="violations">0</h3><p>Total Violations</p></div>
     <div class="card"><h3 id="anomalies">0</h3><p>Anomalies Detected</p></div>
@@ -118,6 +123,21 @@ function clearFilter() { activeFilter = null; renderFindings(); }
 async function loadDashboard() {
   const res = await apiFetch("/dashboard/summary");
   const data = await res.json();
+
+    // Posture — show the score with its decomposition, or state plainly that it
+  // could not be computed. Never display a number we cannot justify.
+  const p = data.posture || {};
+  const scoreEl = document.getElementById("posture-score");
+  const detailEl = document.getElementById("posture-detail");
+  if (p.scored) {
+    countUp("posture-score", Math.round(p.score));
+    scoreEl.dataset.suffix = "%";
+    detailEl.textContent = `${p.controls_passed}/${p.controls_evaluated} controls passing`
+      + (p.controls_unverified ? ` · ${p.controls_unverified} unverified` : "");
+  } else {
+    scoreEl.textContent = "—";
+    detailEl.textContent = p.reason || "Not enough data to score.";
+  }
 
   countUp("scans", data.total_scans);
   countUp("violations", data.total_violations);
