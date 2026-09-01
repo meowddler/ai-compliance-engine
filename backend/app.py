@@ -229,6 +229,28 @@ async def upload_logs(file: UploadFile = File(...), db: Session = Depends(get_db
         db.rollback()  # no partial scan is left behind
         raise HTTPException(status_code=500, detail=f"Failed to save scan: {exc}")
 
+    # Record posture at this point in time so trends are tied to real
+    # evaluation runs rather than sampled arbitrarily.
+    try:
+        from backend.utils.posture import compute_posture
+        from backend.models.models import PostureSnapshot
+
+        flat_results = [r for res in rule_results for r in res["results"]]
+        snap = compute_posture(flat_results)
+        db.add(PostureSnapshot(
+            organization_id=current_user.organization_id,
+            scan_id=scan.id,
+            score=str(snap["score"]) if snap["score"] is not None else None,
+            controls_evaluated=snap["controls_evaluated"],
+            controls_passed=snap["controls_passed"],
+            controls_failed=snap["controls_failed"],
+            controls_unverified=snap["controls_unverified"],
+            rubric_version=snap["rubric_version"],
+        ))
+        db.commit()
+    except Exception:
+        db.rollback()   # a snapshot failure must never fail the scan itself
+
     log_action(db, current_user.username, "scan_run", f"Scanned {file.filename} ({len(df)} rows)")
     return {"scan_id": scan.id, "filename": file.filename, "rows_scanned": len(df),
             "anomaly_detection": anomaly_meta, "findings": rule_results}
@@ -624,6 +646,35 @@ def dashboard_summary(db: Session = Depends(get_db), current_user: User = Depend
             for v in recent
         ]
     }
+
+@app.get("/dashboard/posture-history", tags=["Dashboard"])
+def posture_history(limit: int = 30, db: Session = Depends(get_db),
+                    current_user: User = Depends(get_current_user)):
+    """Posture over time — the trend behind the current score."""
+    from backend.models.models import PostureSnapshot
+
+    rows = (db.query(PostureSnapshot)
+              .filter(PostureSnapshot.organization_id == current_user.organization_id)
+              .order_by(PostureSnapshot.created_at.desc())
+              .limit(limit).all())
+    rows = list(reversed(rows))   # oldest first, for charting
+
+    return {
+        "points": [
+            {
+                "scan_id": r.scan_id,
+                "score": float(r.score) if r.score is not None else None,
+                "controls_evaluated": r.controls_evaluated,
+                "controls_passed": r.controls_passed,
+                "controls_failed": r.controls_failed,
+                "controls_unverified": r.controls_unverified,
+                "at": r.created_at.isoformat() if r.created_at else None,
+            }
+            for r in rows
+        ],
+        "rubric_version": rows[-1].rubric_version if rows else None,
+    }
+
 
 @app.post("/reports/generate", tags=["Reports"])
 def generate_report(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):

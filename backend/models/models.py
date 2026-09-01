@@ -183,3 +183,25 @@ class FindingHistory(Base):
     note = Column(String, nullable=True)
     changed_by = Column(String)
     changed_at = Column(DateTime, default=datetime.utcnow)
+
+
+class PostureSnapshot(Base):
+    """Posture at a point in time.
+
+    The current score answers "where do we stand"; snapshots answer "are we
+    getting better or worse". Stored per scan so the trend is tied to real
+    evaluation runs rather than sampled arbitrarily.
+    """
+    __tablename__ = "posture_snapshots"
+
+    id = Column(Integer, primary_key=True, index=True)
+    organization_id = Column(Integer, ForeignKey("organizations.id"), index=True, nullable=True)
+    scan_id = Column(Integer, ForeignKey("scans.id"), index=True, nullable=True)
+
+    score = Column(String, nullable=True)          # null when not scoreable
+    controls_evaluated = Column(Integer, default=0)
+    controls_passed = Column(Integer, default=0)
+    controls_failed = Column(Integer, default=0)
+    controls_unverified = Column(Integer, default=0)
+    rubric_version = Column(String)
+    created_at = Column(DateTime, default=datetime.utcnow)
