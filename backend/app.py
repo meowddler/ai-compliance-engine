@@ -729,6 +729,133 @@ def reset_scans(db: Session = Depends(get_db), current_user: User = Depends(requ
     log_action(db, current_user.username, "scans_reset", "Cleared all scan history, evidence, and violations")
     return {"message": "All scans, evidence, and violations cleared"}
 
+"""Evidence freshness monitoring.
+
+A compliance control is only as current as the evidence behind it. Evidence
+that has aged past its validity window can no longer support a PASS — but it
+also does not mean the control FAILED. It means we can no longer verify it.
+
+So stale evidence degrades a control to INSUFFICIENT_EVIDENCE, never to FAIL
+and never leaving it as PASS. This is the same fail-closed principle used
+throughout the engine: when we cannot conclude, say so explicitly.
+"""
+
+from datetime import datetime, timedelta
+
+# Statuses that can be degraded. A control that already FAILED stays failed —
+# stale evidence does not erase a known violation.
+DEGRADABLE_STATUSES = {"PASS", "FAIL"}
+DEGRADED_STATUS = "INSUFFICIENT_EVIDENCE"
+
+
+def is_stale(collected_at, freshness_days, now=None):
+    """True if evidence has aged past its validity window."""
+    if collected_at is None:
+        return True                       # unknown age cannot be trusted as fresh
+    now = now or datetime.utcnow()
+    return (now - collected_at) > timedelta(days=freshness_days)
+
+
+def age_days(collected_at, now=None):
+    if collected_at is None:
+        return None
+    now = now or datetime.utcnow()
+    return (now - collected_at).days
+
+
+def evaluate_staleness(findings, freshness_days, now=None):
+    """Decide which findings should degrade because their evidence is stale.
+
+    findings: iterable of objects with .id, .status, and .evidence_collected_at
+
+    Returns a list of degradation decisions. Nothing is mutated here — the
+    caller applies them, so this stays testable and side-effect free.
+    """
+    now = now or datetime.utcnow()
+    decisions = []
+
+    for f in findings:
+        current = (getattr(f, "status", None) or "").upper()
+        if current not in DEGRADABLE_STATUSES:
+            continue                      # already unverified; nothing to degrade
+
+        collected = getattr(f, "evidence_collected_at", None)
+        if not is_stale(collected, freshness_days, now):
+            continue
+
+        decisions.append({
+            "finding_id": getattr(f, "id", None),
+            "from_status": current,
+            "to_status": DEGRADED_STATUS,
+            "reason": (
+                f"Evidence is {age_days(collected, now)} days old, exceeding the "
+                f"{freshness_days}-day validity window; the control can no longer be verified."
+                if collected else
+                "Evidence collection date is unknown; the control cannot be verified."
+            ),
+        })
+
+    return decisions
+
+@app.post("/maintenance/refresh-staleness", tags=["Scans"])
+def refresh_staleness(dry_run: bool = True, db: Session = Depends(get_db),
+                      current_user: User = Depends(require_role(["Admin", "Auditor"]))):
+    """Degrade findings whose evidence has aged past its validity window.
+
+    Stale evidence cannot support a verdict, so affected findings move to
+    INSUFFICIENT_EVIDENCE — never silently remaining PASS. Runs as an explicit
+    maintenance action now; Phase 5's scheduler will invoke the same logic.
+
+    dry_run=True reports what WOULD change without writing anything.
+    """
+    from backend.utils.freshness import evaluate_staleness
+    from backend.models.models import FindingHistory
+
+    org_id = current_user.organization_id
+
+    rows = (db.query(Violation, Evidence)
+              .outerjoin(Evidence, Violation.evidence_id == Evidence.id)
+              .filter(Violation.organization_id == org_id).all())
+
+    class _F:
+        pass
+    candidates = []
+    for v, ev in rows:
+        f = _F()
+        f.id = v.id
+        f.status = v.status
+        f.evidence_collected_at = ev.collected_at if ev else None
+        candidates.append(f)
+
+    decisions = evaluate_staleness(candidates, EVIDENCE_FRESHNESS_DAYS)
+
+    if not dry_run and decisions:
+        by_id = {v.id: v for v, _ in rows}
+        for d in decisions:
+            v = by_id.get(d["finding_id"])
+            if not v:
+                continue
+            v.status = d["to_status"]
+            v.message = d["reason"]
+            db.add(FindingHistory(
+                violation_id=v.id,
+                organization_id=org_id,
+                from_state=f"status:{d['from_status']}",
+                to_state=f"status:{d['to_status']}",
+                note=d["reason"],
+                changed_by="system:freshness-monitor",
+            ))
+        db.commit()
+        log_action(db, current_user.username, "staleness_refresh",
+                   f"Degraded {len(decisions)} finding(s) due to stale evidence")
+
+    return {
+        "dry_run": dry_run,
+        "freshness_window_days": EVIDENCE_FRESHNESS_DAYS,
+        "findings_checked": len(candidates),
+        "degraded_count": len(decisions),
+        "degraded": decisions[:50],
+    }
 
 # Serve the frontend. Must be last — it catches all routes not claimed above.
 app.mount("/", StaticFiles(directory="frontend", html=True), name="frontend")
