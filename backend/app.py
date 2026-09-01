@@ -276,6 +276,85 @@ def explain_violation(violation_id: int, db: Session = Depends(get_db), current_
 def get_violations(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
     return db.query(Violation).filter(Violation.organization_id == current_user.organization_id).all()
 
+
+class LifecycleUpdateRequest(BaseModel):
+    to_state: str
+    note: str | None = None
+
+
+@app.post("/violations/{violation_id}/lifecycle")
+def update_finding_lifecycle(violation_id: int, req: LifecycleUpdateRequest,
+                             db: Session = Depends(get_db),
+                             current_user: User = Depends(get_current_user)):
+    """Move a finding through its lifecycle. Every change is recorded."""
+    from backend.utils.lifecycle import validate_transition, InvalidTransition, allowed_next
+    from backend.models.models import FindingHistory
+
+    v = db.query(Violation).filter(
+        Violation.id == violation_id,
+        Violation.organization_id == current_user.organization_id
+    ).first()
+    if not v:
+        raise HTTPException(status_code=404, detail="Finding not found")
+
+    current_state = v.lifecycle or "OPEN"
+    try:
+        validate_transition(current_state, req.to_state)
+    except InvalidTransition as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+    db.add(FindingHistory(
+        violation_id=v.id,
+        organization_id=current_user.organization_id,
+        from_state=current_state,
+        to_state=req.to_state,
+        note=req.note,
+        changed_by=current_user.username,
+    ))
+    v.lifecycle = req.to_state
+    v.lifecycle_updated_at = datetime.utcnow()
+    v.lifecycle_updated_by = current_user.username
+    db.commit()
+
+    log_action(db, current_user.username, "finding_lifecycle_changed",
+               f"Finding #{v.id}: {current_state} -> {req.to_state}"
+               + (f" ({req.note})" if req.note else ""))
+
+    return {"violation_id": v.id, "lifecycle": v.lifecycle,
+            "allowed_next": allowed_next(v.lifecycle),
+            "updated_by": v.lifecycle_updated_by}
+
+
+@app.get("/violations/{violation_id}/history")
+def get_finding_history(violation_id: int, db: Session = Depends(get_db),
+                        current_user: User = Depends(get_current_user)):
+    """Full lifecycle history for a finding — append-only, never rewritten."""
+    from backend.models.models import FindingHistory
+    from backend.utils.lifecycle import allowed_next
+
+    v = db.query(Violation).filter(
+        Violation.id == violation_id,
+        Violation.organization_id == current_user.organization_id
+    ).first()
+    if not v:
+        raise HTTPException(status_code=404, detail="Finding not found")
+
+    rows = db.query(FindingHistory).filter(
+        FindingHistory.violation_id == violation_id
+    ).order_by(FindingHistory.changed_at.asc()).all()
+
+    return {
+        "violation_id": v.id,
+        "current_lifecycle": v.lifecycle or "OPEN",
+        "allowed_next": allowed_next(v.lifecycle),
+        "history": [
+            {"from": h.from_state, "to": h.to_state, "note": h.note,
+             "by": h.changed_by, "at": h.changed_at.isoformat() if h.changed_at else None}
+            for h in rows
+        ],
+    }
+
+
 @app.get("/violations/{violation_id}/provenance")
 def get_violation_provenance(violation_id: int, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
     v = db.query(Violation).filter(

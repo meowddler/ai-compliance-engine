@@ -84,6 +84,11 @@ class Violation(Base):
     rule_name = Column(String)
     severity = Column(String)
     status = Column(String, default="FAIL", index=True)   # PASS/FAIL/ERROR/INSUFFICIENT_EVIDENCE
+    # Finding lifecycle — how the ORGANISATION is handling this finding.
+    # Distinct from `status`, which is the engine's evaluation verdict.
+    lifecycle = Column(String, default="OPEN", index=True)
+    lifecycle_updated_at = Column(DateTime, nullable=True)
+    lifecycle_updated_by = Column(String, nullable=True)
     message = Column(String)
     is_anomaly = Column(Boolean, default=False)
     anomaly_score = Column(String, nullable=True)
@@ -159,3 +164,22 @@ class ScanRecord(Base):
     anomaly_score = Column(String, nullable=True)
     detector_version = Column(String, nullable=True)   # which model scored it
     created_at = Column(DateTime, default=datetime.utcnow)
+
+class FindingHistory(Base):
+    """Append-only record of every lifecycle change on a finding.
+
+    A finding's current state is not enough for an audit — you must be able to
+    show who moved it, when, and from what. This table is never updated, only
+    appended to.
+    """
+    __tablename__ = "finding_history"
+
+    id = Column(Integer, primary_key=True, index=True)
+    violation_id = Column(Integer, ForeignKey("violations.id"), index=True)
+    organization_id = Column(Integer, ForeignKey("organizations.id"), index=True, nullable=True)
+
+    from_state = Column(String, nullable=True)
+    to_state = Column(String)
+    note = Column(String, nullable=True)
+    changed_by = Column(String)
+    changed_at = Column(DateTime, default=datetime.utcnow)
