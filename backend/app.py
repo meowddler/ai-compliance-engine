@@ -792,6 +792,74 @@ def refresh_staleness(dry_run: bool = True, db: Session = Depends(get_db),
         "degraded_count": len(decisions),
         "degraded": decisions[:50],
     }
+@app.get("/dashboard/changes", tags=["Dashboard"])
+def posture_changes(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    """Diff the two most recent scans: what newly failed, newly passed, or became unverifiable.
+
+    A posture score tells you where you stand; this tells you what MOVED. It is
+    the difference between monitoring and merely measuring.
+    """
+    org_id = current_user.organization_id
+
+    scans = (db.query(Scan).filter(Scan.organization_id == org_id)
+               .order_by(Scan.id.desc()).limit(2).all())
+    if len(scans) < 2:
+        return {"comparable": False,
+                "reason": "At least two scans are required to detect change.",
+                "scans_available": len(scans)}
+
+    current_scan, previous_scan = scans[0], scans[1]
+
+    def status_map(scan_id):
+        """server_id + rule_name -> status, for one scan."""
+        rows = db.query(Violation).filter(
+            Violation.organization_id == org_id,
+            Violation.scan_id == scan_id
+        ).all()
+        return {(r.server_id, r.rule_name): (r.status or "FAIL") for r in rows}
+
+    cur, prev = status_map(current_scan.id), status_map(previous_scan.id)
+
+    newly_failing, newly_resolved, newly_unverified, newly_observed = [], [], [], []
+
+    prev_servers = {k[0] for k in prev.keys()}
+
+    for key, status in cur.items():
+        was = prev.get(key)
+        # A server absent from the previous scan was not "passing" — it was
+        # simply not observed. Reporting it as a regression would be false.
+        if key[0] not in prev_servers:
+            newly_observed.append({"server_id": key[0], "rule": key[1], "status": status})
+            continue
+        if status == "FAIL" and was != "FAIL":
+            newly_failing.append({"server_id": key[0], "rule": key[1], "was": was or "PASS"})
+        elif status in ("INSUFFICIENT_EVIDENCE", "ERROR") and was not in ("INSUFFICIENT_EVIDENCE", "ERROR"):
+            newly_unverified.append({"server_id": key[0], "rule": key[1], "was": was or "PASS", "now": status})
+
+    # Present in the previous scan but no longer a finding => it now passes.
+    cur_servers = {k[0] for k in cur.keys()}
+    for key, was in prev.items():
+        # Only a server still being observed can be said to have improved.
+        if key[0] in cur_servers and key not in cur and was in ("FAIL", "INSUFFICIENT_EVIDENCE", "ERROR"):
+            newly_resolved.append({"server_id": key[0], "rule": key[1], "was": was})
+
+    return {
+        "comparable": True,
+        "current_scan": {"id": current_scan.id, "filename": current_scan.filename,
+                         "at": current_scan.created_at.isoformat() if current_scan.created_at else None},
+        "previous_scan": {"id": previous_scan.id, "filename": previous_scan.filename,
+                          "at": previous_scan.created_at.isoformat() if previous_scan.created_at else None},
+        "newly_failing": newly_failing,
+        "newly_resolved": newly_resolved,
+        "newly_unverified": newly_unverified,
+        "newly_observed": newly_observed,
+        "summary": {
+            "newly_failing": len(newly_failing),
+            "newly_resolved": len(newly_resolved),
+            "newly_unverified": len(newly_unverified),
+            "newly_observed": len(newly_observed),
+        },
+    }
 
 # Serve the frontend. Must be last — it catches all routes not claimed above.
 app.mount("/", StaticFiles(directory="frontend", html=True), name="frontend")
