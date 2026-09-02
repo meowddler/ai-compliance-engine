@@ -23,6 +23,7 @@ from datetime import datetime
 from backend.ai.service import explain_finding
 from backend.models.models import AIInteraction
 from pydantic import BaseModel
+from backend.models.models import PostureSnapshot
 
 TAGS_METADATA = [
     {"name": "Auth", "description": "Login and token issue."},
@@ -722,6 +723,7 @@ def reset_scans(db: Session = Depends(get_db), current_user: User = Depends(requ
     if finding_ids:
         db.query(FindingHistory).filter(FindingHistory.violation_id.in_(finding_ids)).delete(synchronize_session=False)
     db.query(Violation).filter(Violation.organization_id == org_id).delete(synchronize_session=False)
+    db.query(PostureSnapshot).filter(PostureSnapshot.organization_id == org_id).delete(synchronize_session=False)
     db.query(ScanRecord).filter(ScanRecord.organization_id == org_id).delete(synchronize_session=False)
     db.query(Evidence).filter(Evidence.organization_id == org_id).delete(synchronize_session=False)
     db.query(Scan).filter(Scan.organization_id == org_id).delete(synchronize_session=False)

@@ -89,7 +89,8 @@ function renderAudit(list) {
 
     // time — mono
     const timeTd = document.createElement("td");
-    timeTd.textContent = new Date(e.timestamp).toLocaleString();
+    // Timestamps are stored in UTC; render them in the viewer's local time.
+    timeTd.textContent = new Date(e.timestamp + "Z").toLocaleString();
     timeTd.className = "mono-cell";
 
     row.append(userTd, actionTd, detailsTd, timeTd);
