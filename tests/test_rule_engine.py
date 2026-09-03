@@ -129,3 +129,48 @@ def test_evaluate_row_separates_insufficient_from_errors():
     assert len(result["insufficient_evidence"]) == 1   # the missing field
     assert len(result["errors"]) == 1                  # the type mismatch
     assert len(result["violations"]) == 0
+
+def test_empty_cell_is_insufficient_evidence_not_pass():
+    """A blank value must never read as compliant.
+
+    pandas parses an empty CSV cell as NaN, and every comparison against NaN is
+    False — so without an explicit check the rule silently fails to fire and the
+    record is reported as passing. Blanking a column would mark an entire fleet
+    compliant. Same defect class as a missing column.
+    """
+    row = {"server_id": "srv-1", "port": 22, "mfa_enabled": float("nan")}
+    rule = FakeRule("mfa_required", "HIGH", "MFA must be enabled",
+                    [{"field": "mfa_enabled", "operator": "==", "value": False}])
+    result = evaluate_rule_status(row, rule)
+    assert result["status"] == Status.INSUFFICIENT_EVIDENCE
+    assert result["status"] != Status.PASS
+
+
+def test_blank_string_is_insufficient_evidence():
+    """Whitespace-only values carry no information either."""
+    row = {"server_id": "srv-2", "owner": "   "}
+    rule = FakeRule("owner_set", "LOW", "Owner must be recorded",
+                    [{"field": "owner", "operator": "==", "value": ""}])
+    assert evaluate_rule_status(row, rule)["status"] == Status.INSUFFICIENT_EVIDENCE
+
+
+def test_none_value_is_insufficient_evidence():
+    """A JSON null is missing evidence, not a passing check."""
+    row = {"server_id": "srv-3", "encryption": None}
+    rule = FakeRule("enc", "HIGH", "Encryption required",
+                    [{"field": "encryption", "operator": "==", "value": True}])
+    assert evaluate_rule_status(row, rule)["status"] == Status.INSUFFICIENT_EVIDENCE
+
+
+def test_zero_and_false_are_real_values_not_missing():
+    """0 and False are legitimate data. Treating them as 'missing' would be a
+    serious false negative — a port of 0 or mfa_enabled=False must still evaluate."""
+    row = {"server_id": "srv-4", "failed_logins": 0, "mfa_enabled": False}
+
+    rule_zero = FakeRule("no_failures", "LOW", "failed logins",
+                         [{"field": "failed_logins", "operator": "==", "value": 0}])
+    assert evaluate_rule_status(row, rule_zero)["status"] == Status.FAIL   # condition matched
+
+    rule_false = FakeRule("mfa_off", "HIGH", "mfa disabled",
+                          [{"field": "mfa_enabled", "operator": "==", "value": False}])
+    assert evaluate_rule_status(row, rule_false)["status"] == Status.FAIL
