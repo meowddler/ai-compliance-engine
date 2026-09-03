@@ -5,3 +5,6 @@ __pycache__/
 .pytest_cache/
 .env
 evidence_store/
+.vscode/
+.idea/
+*.log

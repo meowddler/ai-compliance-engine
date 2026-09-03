@@ -43,7 +43,7 @@
 
 <script src="js/auth.js"></script>
 <script>
-requireAuth();
+if (!requireAuth()) throw new Error("Not authenticated");
 renderNav("reports.html");
 let currentReportBlob = null;
 

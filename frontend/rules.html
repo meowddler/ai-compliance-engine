@@ -78,7 +78,7 @@
 
 <script src="js/auth.js"></script>
 <script>
-requireAuth();
+if (!requireAuth()) throw new Error("Not authenticated");
 renderNav("rules.html");
 let allRules = [];
 let editingId = null;
