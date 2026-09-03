@@ -10,7 +10,7 @@ from backend.core.dependencies import require_role, get_current_user
 from backend.rules.rule_engine import evaluate_dataframe
 from backend.ml_engine.anomaly_detector import detect_anomalies
 from backend.database import get_db
-from backend.models.models import Violation, Scan, Rule, User, Framework, Evidence, ScanRecord
+from backend.models.models import Violation, Scan, Rule, User, Framework, Evidence, ScanRecord, AuditLog
 from backend.schemas.schemas import RuleCreate, RuleUpdate
 from backend.core.auth import verify_password, create_access_token
 from fastapi.middleware.cors import CORSMiddleware
@@ -252,7 +252,10 @@ async def upload_logs(file: UploadFile = File(...), db: Session = Depends(get_db
     except Exception:
         db.rollback()   # a snapshot failure must never fail the scan itself
 
-    log_action(db, current_user.username, "scan_run", f"Scanned {file.filename} ({len(df)} rows)")
+    log_action(db, current_user.username, "scan_run",
+               f"Scanned {file.filename} ({len(df)} rows)",
+               organization_id=current_user.organization_id)
+    db.commit()
     return {"scan_id": scan.id, "filename": file.filename, "rows_scanned": len(df),
             "anomaly_detection": anomaly_meta, "findings": rule_results}
 
@@ -301,8 +304,10 @@ def approve_draft(req: ApproveDraftRequest, db: Session = Depends(get_db), curre
 
     log_action(
         db, current_user.username, "rule_created_from_ai_draft",
-        f"Approved AI-drafted control '{db_rule.name}' (ai_interaction={req.interaction_id})"
+        f"Approved AI-drafted control '{db_rule.name}' (ai_interaction={req.interaction_id})",
+        organization_id=current_user.organization_id,
     )
+    db.commit()
     return db_rule
 
 @app.post("/violations/{violation_id}/explain", tags=["AI"])
@@ -365,7 +370,9 @@ def update_finding_lifecycle(violation_id: int, req: LifecycleUpdateRequest,
 
     log_action(db, current_user.username, "finding_lifecycle_changed",
                f"Finding #{v.id}: {current_state} -> {req.to_state}"
-               + (f" ({req.note})" if req.note else ""))
+               + (f" ({req.note})" if req.note else ""),
+               organization_id=current_user.organization_id)
+    db.commit()
 
     return {"violation_id": v.id, "lifecycle": v.lifecycle,
             "allowed_next": allowed_next(v.lifecycle),
@@ -526,7 +533,10 @@ def create_rule(rule: RuleCreate, db: Session = Depends(get_db), current_user: U
     db.add(db_rule)
     db.commit()
     db.refresh(db_rule)
-    log_action(db, current_user.username, "rule_created", f"Created rule: {db_rule.name}")
+    log_action(db, current_user.username, "rule_created",
+               f"Created rule: {db_rule.name}",
+               organization_id=current_user.organization_id)
+    db.commit()
     return db_rule
 
 
@@ -580,7 +590,9 @@ def update_rule(rule_id: int, rule: RuleUpdate, db: Session = Depends(get_db), c
         current_user.username,
         "rule_updated",
         f"Rule '{new_rule.name}' -> v{new_rule.version} (id={new_rule.id}): " + "; ".join(changes),
+        organization_id=current_user.organization_id,
     )
+    db.commit()
 
     return new_rule
 
@@ -682,7 +694,10 @@ def generate_report(db: Session = Depends(get_db), current_user: User = Depends(
     summary = dashboard_summary(db, current_user)  # reuse the same logic you already built
     pdf_buffer = generate_compliance_report(summary)
 
-    log_action(db, current_user.username, "report_generated", "Generated compliance PDF report")
+    log_action(db, current_user.username, "report_generated",
+               "Generated compliance PDF report",
+               organization_id=current_user.organization_id)
+    db.commit()
 
     return StreamingResponse(
         pdf_buffer,
@@ -693,8 +708,12 @@ def generate_report(db: Session = Depends(get_db), current_user: User = Depends(
 
 @app.get("/audit-log", tags=["Audit"])
 def get_audit_log(db: Session = Depends(get_db), current_user: User = Depends(require_role(["Admin", "Auditor"]))):
-    from backend.models.models import AuditLog
-    return db.query(AuditLog).order_by(AuditLog.timestamp.desc()).all()
+    # Tenant-scoped: an auditor must never see another organisation's activity.
+    return (db.query(AuditLog)
+              .filter(AuditLog.organization_id == current_user.organization_id)
+              .order_by(AuditLog.timestamp.desc())
+              .limit(500)
+              .all())
 
 
 @app.delete("/rules/{rule_id}", tags=["Rules"])
@@ -708,7 +727,10 @@ def delete_rule(rule_id: int, db: Session = Depends(get_db), current_user: User 
     rule_name = db_rule.name
     db.delete(db_rule)
     db.commit()
-    log_action(db, current_user.username, "rule_deleted", f"Deleted rule: {rule_name}")
+    log_action(db, current_user.username, "rule_deleted",
+               f"Deleted rule: {rule_name}",
+               organization_id=current_user.organization_id)
+    db.commit()
     return {"message": "Rule deleted"}
 
 @app.delete("/scans/reset", tags=["Scans"])
@@ -728,7 +750,10 @@ def reset_scans(db: Session = Depends(get_db), current_user: User = Depends(requ
     db.query(Evidence).filter(Evidence.organization_id == org_id).delete(synchronize_session=False)
     db.query(Scan).filter(Scan.organization_id == org_id).delete(synchronize_session=False)
     db.commit()
-    log_action(db, current_user.username, "scans_reset", "Cleared all scan history, evidence, and violations")
+    log_action(db, current_user.username, "scans_reset",
+               "Cleared all scan history, evidence, and violations",
+               organization_id=current_user.organization_id)
+    db.commit()
     return {"message": "All scans, evidence, and violations cleared"}
 
 
@@ -783,7 +808,9 @@ def refresh_staleness(dry_run: bool = True, db: Session = Depends(get_db),
             ))
         db.commit()
         log_action(db, current_user.username, "staleness_refresh",
-                   f"Degraded {len(decisions)} finding(s) due to stale evidence")
+                   f"Degraded {len(decisions)} finding(s) due to stale evidence",
+                   organization_id=current_user.organization_id)
+        db.commit()
 
     return {
         "dry_run": dry_run,
