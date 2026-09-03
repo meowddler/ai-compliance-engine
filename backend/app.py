@@ -10,7 +10,7 @@ from backend.core.dependencies import require_role, get_current_user
 from backend.rules.rule_engine import evaluate_dataframe
 from backend.ml_engine.anomaly_detector import detect_anomalies
 from backend.database import get_db
-from backend.models.models import Violation, Scan, Rule, User, Framework, Evidence, ScanRecord, AuditLog
+from backend.models.models import Violation, Scan, Rule, User, Framework, Evidence, ScanRecord, AuditLog,Organization
 from backend.schemas.schemas import RuleCreate, RuleUpdate
 from backend.core.auth import verify_password, create_access_token
 from fastapi.middleware.cors import CORSMiddleware
@@ -692,7 +692,8 @@ def posture_history(limit: int = 30, db: Session = Depends(get_db),
 @app.post("/reports/generate", tags=["Reports"])
 def generate_report(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
     summary = dashboard_summary(db, current_user)  # reuse the same logic you already built
-    pdf_buffer = generate_compliance_report(summary)
+    org = db.query(Organization).filter(Organization.id == current_user.organization_id).first()
+    pdf_buffer = generate_compliance_report(summary, organization_name=org.name if org else None)
 
     log_action(db, current_user.username, "report_generated",
                "Generated compliance PDF report",

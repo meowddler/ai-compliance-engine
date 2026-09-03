@@ -32,6 +32,21 @@ class InsufficientEvidence(Exception):
     """
 
 
+def _is_missing(value):
+    """True for values that carry no information: None, NaN, or blank text.
+
+    NaN is checked via the self-inequality identity (NaN != NaN) so this works
+    without importing pandas or numpy into the engine.
+    """
+    if value is None:
+        return True
+    if isinstance(value, float) and value != value:      # NaN
+        return True
+    if isinstance(value, str) and not value.strip():
+        return True
+    return False
+
+
 def evaluate_condition(row, condition):
     """Check ONE condition against a record. No eval(), no code execution.
 
@@ -53,6 +68,16 @@ def evaluate_condition(row, condition):
         )
 
     row_value = row[field]
+
+    # An EMPTY cell is missing evidence too. pandas parses a blank CSV value as
+    # NaN, and every comparison against NaN is False — so without this check a
+    # rule silently fails to fire and the record is reported compliant. A blank
+    # column would mark an entire fleet as passing. Same defect class as a
+    # missing column, and just as dangerous.
+    if _is_missing(row_value):
+        raise InsufficientEvidence(
+            f"Field {field!r} is present but empty; cannot evaluate."
+        )
 
     if op in _LIST_OPERATORS and not isinstance(value, (list, tuple, set)):
         raise ConditionError(
