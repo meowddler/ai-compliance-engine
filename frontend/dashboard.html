@@ -121,8 +121,23 @@ function renderFindings() {
 function clearFilter() { activeFilter = null; renderFindings(); }
 
 async function loadDashboard() {
-  const res = await apiFetch("/dashboard/summary");
-  const data = await res.json();
+  let data;
+  try {
+    // apiFetch throws on an expired session or timeout; without handling it the
+    // dashboard would render blank with only a console error.
+    const res = await apiFetch("/dashboard/summary");
+    if (!res.ok) throw new Error(`server returned ${res.status}`);
+    data = await res.json();
+  } catch (err) {
+    const tbody = document.getElementById("findings-body");
+    tbody.innerHTML = "";
+    const tr = document.createElement("tr");
+    const td = document.createElement("td");
+    td.colSpan = 5; td.className = "empty-state";
+    td.textContent = "Could not load dashboard data: " + err.message;
+    tr.appendChild(td); tbody.appendChild(tr);
+    return;
+  }
 
     // Posture — show the score with its decomposition, or state plainly that it
   // could not be computed. Never display a number we cannot justify.

@@ -43,9 +43,29 @@ function actionClass(action) {
   return "insufficient-evidence";
 }
 
+// Render a single full-width message row. Used for empty and error states so
+// a failure is visible rather than leaving a silently blank table.
+function messageRow(tbody, text, cols) {
+  tbody.innerHTML = "";
+  const tr = document.createElement("tr");
+  const td = document.createElement("td");
+  td.colSpan = cols; td.className = "empty-state";
+  td.textContent = text;
+  tr.appendChild(td); tbody.appendChild(tr);
+}
+
 async function loadAudit() {
-  const res = await apiFetch("/audit-log");
   const tbody = document.getElementById("audit-body");
+  let res;
+  try {
+    // apiFetch throws on an expired session or a timeout. Without this the
+    // page would fail with an unhandled rejection and render nothing at all.
+    res = await apiFetch("/audit-log");
+  } catch (err) {
+    messageRow(tbody, "Could not load the audit log: " + err.message, 4);
+    return;
+  }
+
   if (res.status === 403) {
     tbody.innerHTML = "";
     const tr = document.createElement("tr");
@@ -56,7 +76,17 @@ async function loadAudit() {
     document.getElementById("audit-search").style.display = "none";
     return;
   }
-  allAudit = await res.json();
+  if (!res.ok) {
+    messageRow(tbody, `Could not load the audit log (HTTP ${res.status}).`, 4);
+    return;
+  }
+
+  try {
+    allAudit = await res.json();
+  } catch {
+    messageRow(tbody, "The server returned an unreadable response.", 4);
+    return;
+  }
   renderAudit(allAudit);
 }
 
