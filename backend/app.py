@@ -527,7 +527,9 @@ def create_rule(rule: RuleCreate, db: Session = Depends(get_db), current_user: U
         framework=rule.framework,
         severity=rule.severity,
         remediation=rule.remediation,
-        condition=json.dumps([c.dict() for c in rule.condition]),
+        # condition is validated plain data (leaf, tree, or legacy list), not
+        # a list of models — dump it directly.
+        condition=json.dumps(rule.condition),
         active=rule.active
     )
     db.add(db_rule)
@@ -551,7 +553,7 @@ def update_rule(rule_id: int, rule: RuleUpdate, db: Session = Depends(get_db), c
 
     update_data = rule.dict(exclude_unset=True)
     if "condition" in update_data:
-        update_data["condition"] = json.dumps([c.dict() if hasattr(c, "dict") else c for c in rule.condition])
+        update_data["condition"] = json.dumps(rule.condition)
 
     # Detect what actually changes.
     changes = []
