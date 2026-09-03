@@ -19,7 +19,7 @@ from backend.utils.report_generator import generate_compliance_report
 from backend.utils.audit import log_action
 from backend.config import CORS_ORIGINS, EVIDENCE_FRESHNESS_DAYS
 from fastapi.staticfiles import StaticFiles
-from datetime import datetime
+from datetime import datetime, timezone
 from backend.ai.service import explain_finding
 from backend.models.models import AIInteraction
 from pydantic import BaseModel
@@ -50,7 +50,7 @@ def evidence_freshness(collected_at):
     of compliance — a control relying on it degrades to INSUFFICIENT_EVIDENCE."""
     if collected_at is None:
         return {"state": "UNKNOWN", "age_days": None}
-    age_days = (datetime.utcnow() - collected_at).days
+    age_days = (datetime.now(timezone.utc) - collected_at).days
     state = "FRESH" if age_days <= EVIDENCE_FRESHNESS_DAYS else "STALE"
     return {"state": state, "age_days": age_days, "threshold_days": EVIDENCE_FRESHNESS_DAYS}
 
@@ -359,7 +359,7 @@ def update_finding_lifecycle(violation_id: int, req: LifecycleUpdateRequest,
         changed_by=current_user.username,
     ))
     v.lifecycle = req.to_state
-    v.lifecycle_updated_at = datetime.utcnow()
+    v.lifecycle_updated_at = datetime.now(timezone.utc)
     v.lifecycle_updated_by = current_user.username
     db.commit()
 
