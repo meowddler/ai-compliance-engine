@@ -84,9 +84,22 @@ let allRules = [];
 let editingId = null;
 
 async function loadRules() {
-  const res = await apiFetch("/rules");
-  allRules = await res.json();
-  renderRules(allRules);
+  const tbody = document.getElementById("rules-body");
+  try {
+    // apiFetch throws on an expired session or timeout; unhandled, the table
+    // stays empty with no explanation of why.
+    const res = await apiFetch("/rules");
+    if (!res.ok) throw new Error(`server returned ${res.status}`);
+    allRules = await res.json();
+    renderRules(allRules);
+  } catch (err) {
+    tbody.innerHTML = "";
+    const tr = document.createElement("tr");
+    const td = document.createElement("td");
+    td.colSpan = 6; td.className = "empty-state";
+    td.textContent = "Could not load rules: " + err.message;
+    tr.appendChild(td); tbody.appendChild(tr);
+  }
 }
 
 function pill(text, cls) {
@@ -146,13 +159,41 @@ function filterRules() {
 }
 
 async function toggleRule(id, isActive) {
-  await apiFetch(`/rules/${id}`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ active: isActive }) });
+  const status = document.getElementById("rule-status");
+  try {
+    const res = await apiFetch(`/rules/${id}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ active: isActive })
+    });
+    if (!res.ok) throw new Error(`server returned ${res.status}`);
+    status.className = "status-line ok";
+    status.innerText = isActive ? "Rule enabled." : "Rule disabled.";
+  } catch (err) {
+    // Reload regardless so the checkbox reflects the true stored state rather
+    // than the click that failed.
+    status.className = "status-line err";
+    status.innerText = "Could not change rule state: " + err.message;
+  }
   loadRules();
 }
 
 async function deleteRule(id) {
   if (!confirm("Delete this rule? This cannot be undone.")) return;
-  await apiFetch(`/rules/${id}`, { method: "DELETE" });
+  const status = document.getElementById("rule-status");
+  try {
+    const res = await apiFetch(`/rules/${id}`, { method: "DELETE" });
+    if (!res.ok) {
+      let detail = `server returned ${res.status}`;
+      try { detail = (await res.json()).detail || detail; } catch { /* non-JSON */ }
+      throw new Error(detail);
+    }
+    status.className = "status-line ok";
+    status.innerText = "Rule deleted.";
+  } catch (err) {
+    status.className = "status-line err";
+    status.innerText = "Could not delete rule: " + err.message;
+  }
   if (editingId === id) cancelEdit();
   loadRules();
 }
@@ -215,10 +256,21 @@ async function submitRule() {
       remediation: document.getElementById("r-remediation").value,
       condition, active: true
     };
-    const res = await apiFetch("/rules", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
-    if (res.ok) { status.className = "status-line ok"; status.innerText = "Rule created."; cancelEdit(); loadRules(); }
-    else if (res.status === 403) { status.className = "status-line err"; status.innerText = "Not authorized — only Admins can create rules."; }
-    else { status.className = "status-line err"; status.innerText = "Failed to create rule."; }
+    try {
+      const res = await apiFetch("/rules", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
+      if (res.ok) { status.className = "status-line ok"; status.innerText = "Rule created."; cancelEdit(); loadRules(); }
+      else if (res.status === 403) { status.className = "status-line err"; status.innerText = "Not authorized — only Admins can create rules."; }
+      else {
+        // Validation errors carry a reason; showing it saves the user guessing.
+        let detail = "";
+        try { const b = await res.json(); detail = typeof b.detail === "string" ? b.detail : JSON.stringify(b.detail); } catch { /* non-JSON */ }
+        status.className = "status-line err";
+        status.innerText = detail ? `Failed to create rule: ${detail}` : "Failed to create rule.";
+      }
+    } catch (err) {
+      status.className = "status-line err";
+      status.innerText = "Failed to create rule: " + err.message;
+    }
   } else {
     const payload = {
       description: document.getElementById("r-description").value,
@@ -227,10 +279,20 @@ async function submitRule() {
       remediation: document.getElementById("r-remediation").value,
       condition
     };
-    const res = await apiFetch(`/rules/${editingId}`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
-    if (res.ok) { status.className = "status-line ok"; status.innerText = "Rule updated — new version created."; cancelEdit(); loadRules(); }
-    else if (res.status === 403) { status.className = "status-line err"; status.innerText = "Not authorized to edit rules."; }
-    else { status.className = "status-line err"; status.innerText = "Failed to update rule."; }
+    try {
+      const res = await apiFetch(`/rules/${editingId}`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
+      if (res.ok) { status.className = "status-line ok"; status.innerText = "Rule updated — new version created."; cancelEdit(); loadRules(); }
+      else if (res.status === 403) { status.className = "status-line err"; status.innerText = "Not authorized to edit rules."; }
+      else {
+        let detail = "";
+        try { const b = await res.json(); detail = typeof b.detail === "string" ? b.detail : JSON.stringify(b.detail); } catch { /* non-JSON */ }
+        status.className = "status-line err";
+        status.innerText = detail ? `Failed to update rule: ${detail}` : "Failed to update rule.";
+      }
+    } catch (err) {
+      status.className = "status-line err";
+      status.innerText = "Failed to update rule: " + err.message;
+    }
   }
 }
 let currentDraft = null;
@@ -313,14 +375,21 @@ async function approveDraft() {
   if (!currentDraft) return;
   const d = currentDraft.draft;
   const status = document.getElementById("draft-status");
-  const res = await apiFetch("/ai/approve-draft", {
-    method: "POST", headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      name: d.name, description: d.description, framework: d.framework,
-      severity: d.severity, remediation: d.remediation, condition: d.condition,
-      interaction_id: currentDraft.interaction_id
-    })
-  });
+  let res;
+  try {
+    res = await apiFetch("/ai/approve-draft", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        name: d.name, description: d.description, framework: d.framework,
+        severity: d.severity, remediation: d.remediation, condition: d.condition,
+        interaction_id: currentDraft.interaction_id
+      })
+    });
+  } catch (err) {
+    status.className = "status-line err";
+    status.innerText = "Could not create the control: " + err.message;
+    return;
+  }
   if (res.ok) {
     status.className = "status-line ok"; status.innerText = "Control approved and created.";
     document.getElementById("draft-result").style.display = "none";

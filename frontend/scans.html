@@ -96,11 +96,26 @@ function pillCell(value) {
 }
 
 async function loadScans() {
-  const res = await apiFetch("/scans");
-  allScans = await res.json();
-  renderScans(allScans);
-  const vRes = await apiFetch("/violations");
-  allViolations = await vRes.json();
+  const tbody = document.getElementById("scans-body");
+  try {
+    // apiFetch throws on an expired session or timeout. Unhandled, that leaves
+    // the table permanently empty with only a console error to explain it.
+    const res = await apiFetch("/scans");
+    if (!res.ok) throw new Error(`server returned ${res.status}`);
+    allScans = await res.json();
+    renderScans(allScans);
+
+    const vRes = await apiFetch("/violations");
+    if (!vRes.ok) throw new Error(`server returned ${vRes.status}`);
+    allViolations = await vRes.json();
+  } catch (err) {
+    tbody.innerHTML = "";
+    const tr = document.createElement("tr");
+    const td = document.createElement("td");
+    td.colSpan = 4; td.className = "empty-state";
+    td.textContent = "Could not load scans: " + err.message;
+    tr.appendChild(td); tbody.appendChild(tr);
+  }
 }
 
 function renderScans(list) {
@@ -265,8 +280,13 @@ function showScanDetail(scan) {
           v.lifecycle = target;
           showScanDetail(scan);   // re-render with the new state
         } else {
-          const err = await r.json();
-          alert(err.detail || "Could not change state.");
+          // Inline feedback rather than alert(): a modal interrupts the page and
+          // reads as a browser error rather than part of the application.
+          let detail = "Could not change state.";
+          try { detail = (await r.json()).detail || detail; } catch { /* non-JSON */ }
+          const st = document.getElementById("upload-status");
+          st.className = "status-line err";
+          st.innerText = detail;
           lcSelect.value = cur;
         }
       };
@@ -357,28 +377,55 @@ async function uploadFile() {
   if (!fileInput.files.length) { status.className = "status-line err"; status.innerText = "Choose a CSV file first."; return; }
   const formData = new FormData();
   formData.append("file", fileInput.files[0]);
+  const runBtn = document.getElementById("run-btn");
+  runBtn.disabled = true; runBtn.textContent = "Scanning...";
   status.className = "status-line"; status.innerText = "Scanning...";
-  const res = await apiFetch("/upload-logs", { method: "POST", body: formData });
-  if (res.ok) {
-    const data = await res.json();
-    status.className = "status-line ok";
-    status.innerText = `Scan complete — ${data.rows_scanned} rows scanned.`;
-    loadScans();
-  } else { status.className = "status-line err"; status.innerText = "Scan failed."; }
+
+  try {
+    const res = await apiFetch("/upload-logs", { method: "POST", body: formData });
+    if (res.ok) {
+      const data = await res.json();
+      status.className = "status-line ok";
+      status.innerText = `Scan complete — ${data.rows_scanned} rows scanned.`;
+      loadScans();
+    } else {
+      // Surface the server's reason (bad CSV, missing column) rather than a
+      // generic failure the user cannot act on.
+      let detail = "";
+      try { detail = (await res.json()).detail || ""; } catch { /* non-JSON body */ }
+      status.className = "status-line err";
+      status.innerText = detail ? `Scan failed: ${detail}` : "Scan failed.";
+    }
+  } catch (err) {
+    status.className = "status-line err";
+    status.innerText = "Scan failed: " + err.message;
+  } finally {
+    runBtn.disabled = false; runBtn.textContent = "Run Scan";
+  }
 }
 
 async function resetScans() {
   if (!confirm("This deletes ALL scans and violations permanently. Continue?")) return;
-  const res = await apiFetch("/scans/reset", { method: "DELETE" });
   const status = document.getElementById("upload-status");
-  if (res.ok) {
-    status.className = "status-line ok";
-    status.innerText = "Scan history cleared.";
-    document.getElementById("scan-detail-panel").style.display = "none";
-    document.getElementById("evidence-panel").style.display = "none";
-    loadScans();
-  } else if (res.status === 403) { status.className = "status-line err"; status.innerText = "Not authorized — Admin only."; }
-  else { status.className = "status-line err"; status.innerText = "Failed to reset."; }
+  try {
+    const res = await apiFetch("/scans/reset", { method: "DELETE" });
+    if (res.ok) {
+      status.className = "status-line ok";
+      status.innerText = "Scan history cleared.";
+      document.getElementById("scan-detail-panel").style.display = "none";
+      document.getElementById("evidence-panel").style.display = "none";
+      loadScans();
+    } else if (res.status === 403) {
+      status.className = "status-line err";
+      status.innerText = "Not authorized — Admin only.";
+    } else {
+      status.className = "status-line err";
+      status.innerText = `Failed to reset (HTTP ${res.status}).`;
+    }
+  } catch (err) {
+    status.className = "status-line err";
+    status.innerText = "Failed to reset: " + err.message;
+  }
 }
 loadScans();
 </script>
