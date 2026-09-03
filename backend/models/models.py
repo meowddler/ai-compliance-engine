@@ -1,207 +1,295 @@
-from sqlalchemy import Column, Integer, String, Boolean, DateTime, ForeignKey, Text
+"""Database models.
+
+Two conventions worth knowing before reading:
+
+1. TENANCY. Every tenant-owned table carries `organization_id`. Queries must
+   filter on it; nothing in this layer enforces that, so the service layer is
+   responsible. Tables without it (Framework) are deliberately global.
+
+2. DELETION. Foreign keys that point at scans or violations declare
+   ON DELETE CASCADE. Clearing a scan previously required remembering to delete
+   every dependent table by hand, and adding a new table silently broke it —
+   three times. The database now enforces the ordering instead of the caller.
+"""
+
+from datetime import datetime, timezone
+
+from sqlalchemy import (
+    Column, Integer, String, Boolean, DateTime, ForeignKey, Text, Index
+)
 from sqlalchemy.orm import relationship
-from datetime import datetime
+
 from backend.database import Base
 
 
+def utcnow():
+    """Timezone-aware UTC timestamp.
+
+    datetime.utcnow() is deprecated and returns a NAIVE datetime, which silently
+    compares wrong against aware values. Timestamps are stored in UTC; clients
+    convert for display.
+    """
+    return datetime.now(timezone.utc)
+
+
+# Role names used by require_role(). Defined once so a typo is an ImportError
+# rather than a silent authorisation failure.
+class Roles:
+    ADMIN = "Admin"
+    AUDITOR = "Auditor"
+    ANALYST = "Analyst"
+    ALL = ("Admin", "Auditor", "Analyst")
+
 
 class Organization(Base):
+    """A tenant. Every piece of customer data belongs to exactly one."""
     __tablename__ = "organizations"
 
     id = Column(Integer, primary_key=True, index=True)
-    name = Column(String, unique=True, index=True)
-    created_at = Column(DateTime, default=datetime.utcnow)
+    name = Column(String, unique=True, index=True, nullable=False)
+    created_at = Column(DateTime(timezone=True), default=utcnow)
+
 
 class Framework(Base):
+    """A regulatory clause, e.g. ISO 27001:2022 A.8.5.
+
+    Deliberately NOT tenant-scoped: published standards are the same for
+    everyone, so they are shared reference data rather than customer data.
+    """
     __tablename__ = "frameworks"
 
     id = Column(Integer, primary_key=True, index=True)
-    name = Column(String, index=True)          # e.g. "ISO 27001"
+    name = Column(String, index=True)           # e.g. "ISO 27001"
     version = Column(String)                    # e.g. "2022"
     clause_id = Column(String, index=True)      # e.g. "A.8.5"
     title = Column(String)                      # e.g. "Secure authentication"
     description = Column(String, nullable=True)
 
+    __table_args__ = (
+        Index("ix_frameworks_name_version_clause", "name", "version", "clause_id"),
+    )
 
 
 class Rule(Base):
+    """A compliance control. Immutably versioned.
+
+    Editing never mutates a row: a new version is inserted and the previous one
+    is marked is_current=False. Historical findings therefore remain tied to the
+    exact control text that produced them.
+    """
     __tablename__ = "rules"
 
     id = Column(Integer, primary_key=True, index=True)
     organization_id = Column(Integer, ForeignKey("organizations.id"), index=True, nullable=True)
-    name = Column(String, index=True)
+    name = Column(String, index=True, nullable=False)
     description = Column(String)
     framework = Column(String)
     framework_clause_id = Column(Integer, ForeignKey("frameworks.id"), nullable=True, index=True)
-    severity = Column(String)
+    severity = Column(String, nullable=False)
     remediation = Column(String)
-    condition = Column(String)          # NEW — stores rule logic as JSON text
-    active = Column(Boolean, default=True)
-    version = Column(Integer, default=1)
-    parent_id = Column(Integer, ForeignKey("rules.id"), nullable=True)  # points to the original rule
-    is_current = Column(Boolean, default=True)  # False once superseded by a newer version
+    condition = Column(Text)                    # JSON-encoded condition list
+    active = Column(Boolean, default=True, nullable=False)
 
+    version = Column(Integer, default=1, nullable=False)
+    parent_id = Column(Integer, ForeignKey("rules.id"), nullable=True)   # root of the version chain
+    is_current = Column(Boolean, default=True, nullable=False)
+
+    __table_args__ = (
+        # The hot path: "active current rules for this org".
+        Index("ix_rules_org_active_current", "organization_id", "active", "is_current"),
+    )
 
 
 class Scan(Base):
+    """One evaluation run over one uploaded file."""
     __tablename__ = "scans"
 
     id = Column(Integer, primary_key=True, index=True)
-    organization_id = Column(Integer, ForeignKey("organizations.id"), index=True, nullable=True)    
+    organization_id = Column(Integer, ForeignKey("organizations.id"), index=True, nullable=True)
     filename = Column(String)
     rows_scanned = Column(Integer)
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime(timezone=True), default=utcnow, index=True)
 
-    # One scan can have many violations
-    violations = relationship("Violation", back_populates="scan")
-    evidence = relationship("Evidence", backref="scan", uselist=False, foreign_keys="Evidence.scan_id")
+    # passive_deletes lets the database's ON DELETE CASCADE do the work rather
+    # than SQLAlchemy loading every child row to delete it in Python.
+    violations = relationship("Violation", back_populates="scan", passive_deletes=True)
+    evidence = relationship("Evidence", back_populates="scan", uselist=False,
+                            foreign_keys="Evidence.scan_id", passive_deletes=True)
+
 
 class Evidence(Base):
+    """The uploaded artifact behind a scan, hashed at ingest.
+
+    Never discarded: a finding is only defensible if the evidence that produced
+    it can be produced again and shown to be unaltered.
+    """
     __tablename__ = "evidence"
 
     id = Column(Integer, primary_key=True, index=True)
     organization_id = Column(Integer, ForeignKey("organizations.id"), index=True, nullable=True)
-    scan_id = Column(Integer, ForeignKey("scans.id"), nullable=True, index=True)
+    scan_id = Column(Integer, ForeignKey("scans.id", ondelete="CASCADE"), nullable=True, index=True)
 
-    filename = Column(String)                       # original uploaded name
-    content_type = Column(String, nullable=True)    # e.g. text/csv
-    sha256 = Column(String, index=True)             # hash of the raw bytes at ingest
+    filename = Column(String)
+    content_type = Column(String, nullable=True)
+    sha256 = Column(String, index=True)         # of the raw bytes as uploaded
     size_bytes = Column(Integer)
-    storage_path = Column(String)                   # where the raw file lives on disk
-    uploaded_by = Column(String)                    # username
-    collected_at = Column(DateTime, default=datetime.utcnow)  # when we ingested it
+    storage_path = Column(String)
+    uploaded_by = Column(String)
+    collected_at = Column(DateTime(timezone=True), default=utcnow)
+
+    scan = relationship("Scan", back_populates="evidence", foreign_keys=[scan_id])
+
 
 class Violation(Base):
+    """A single evaluation result that was not a PASS.
+
+    Two independent state fields, often confused:
+      status    — the ENGINE's verdict (FAIL / ERROR / INSUFFICIENT_EVIDENCE)
+      lifecycle — how the ORGANISATION is handling it (OPEN → ... → CLOSED)
+    The engine owns the first; people own the second.
+    """
     __tablename__ = "violations"
 
     id = Column(Integer, primary_key=True, index=True)
-    organization_id = Column(Integer, ForeignKey("organizations.id"), index=True, nullable=True)    
-    scan_id = Column(Integer, ForeignKey("scans.id"))   # links back to the Scan it came from
-    evidence_id = Column(Integer, ForeignKey("evidence.id"), nullable=True, index=True)  # the exact file evaluated
-    rule_id = Column(Integer, ForeignKey("rules.id"), nullable=True, index=True)         # the exact rule VERSION that fired
+    organization_id = Column(Integer, ForeignKey("organizations.id"), index=True, nullable=True)
+    scan_id = Column(Integer, ForeignKey("scans.id", ondelete="CASCADE"), index=True)
+    evidence_id = Column(Integer, ForeignKey("evidence.id", ondelete="SET NULL"),
+                         nullable=True, index=True)
+    rule_id = Column(Integer, ForeignKey("rules.id"), nullable=True, index=True)
 
     server_id = Column(String, index=True)
     rule_name = Column(String)
     severity = Column(String)
-    status = Column(String, default="FAIL", index=True)   # PASS/FAIL/ERROR/INSUFFICIENT_EVIDENCE
-    # Finding lifecycle — how the ORGANISATION is handling this finding.
-    # Distinct from `status`, which is the engine's evaluation verdict.
+    status = Column(String, default="FAIL", index=True)
+
     lifecycle = Column(String, default="OPEN", index=True)
-    lifecycle_updated_at = Column(DateTime, nullable=True)
+    lifecycle_updated_at = Column(DateTime(timezone=True), nullable=True)
     lifecycle_updated_by = Column(String, nullable=True)
-    message = Column(String)
+
+    message = Column(Text)
     is_anomaly = Column(Boolean, default=False)
     anomaly_score = Column(String, nullable=True)
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime(timezone=True), default=utcnow, index=True)
 
     scan = relationship("Scan", back_populates="violations")
+
+    __table_args__ = (
+        Index("ix_violations_org_scan", "organization_id", "scan_id"),
+    )
+
 
 class User(Base):
     __tablename__ = "users"
 
     id = Column(Integer, primary_key=True, index=True)
     organization_id = Column(Integer, ForeignKey("organizations.id"), index=True, nullable=True)
-    username = Column(String, unique=True, index=True)
-    hashed_password = Column(String)
-    role = Column(String)   # "Admin", "Auditor", "Analyst"
+    username = Column(String, unique=True, index=True, nullable=False)
+    hashed_password = Column(String, nullable=False)
+    role = Column(String, nullable=False)       # see Roles above
+    is_active = Column(Boolean, default=True, nullable=False)
 
 
 class AuditLog(Base):
+    """Append-only record of state-changing actions.
+
+    organization_id is required for isolation: without it every tenant's
+    auditor could read every other tenant's activity, usernames included.
+    """
     __tablename__ = "audit_logs"
 
     id = Column(Integer, primary_key=True, index=True)
+    organization_id = Column(Integer, ForeignKey("organizations.id"), index=True, nullable=True)
     username = Column(String)
-    action = Column(String)          # e.g. "rule_created", "scan_run", "report_generated"
-    details = Column(String)         # short human-readable description
-    timestamp = Column(DateTime, default=datetime.utcnow)
+    action = Column(String, index=True)
+    details = Column(Text)
+    timestamp = Column(DateTime(timezone=True), default=utcnow, index=True)
 
 
 class AIInteraction(Base):
     """Immutable record of every AI call.
 
-    The roadmap's requirement: every AI call must be reconstructible later.
-    Stores what was asked, what came back, which model and prompt version
-    produced it, and what it cost — so any AI-derived artifact can be audited.
+    Every AI-derived artifact must be reconstructible: which model, which prompt
+    version, what input, what came back, what it cost.
     """
     __tablename__ = "ai_interactions"
 
     id = Column(Integer, primary_key=True, index=True)
     organization_id = Column(Integer, ForeignKey("organizations.id"), index=True, nullable=True)
 
-    task = Column(String, index=True)          # e.g. "explain_finding"
-    provider = Column(String)                  # e.g. "nvidia"
-    model = Column(String)                     # exact model id
-    prompt_version = Column(String)            # which prompt template version
+    task = Column(String, index=True)
+    provider = Column(String)
+    model = Column(String)
+    prompt_version = Column(String)
 
-    input_ref = Column(String, nullable=True)  # what it was about, e.g. "violation:72"
-    input_hash = Column(String, nullable=True) # hash of the input, for reproducibility
-    raw_output = Column(Text, nullable=True)   # exactly what the model returned
+    input_ref = Column(String, nullable=True)
+    input_hash = Column(String, nullable=True)
+    raw_output = Column(Text, nullable=True)
 
     latency_ms = Column(Integer, nullable=True)
     prompt_tokens = Column(Integer, nullable=True)
     completion_tokens = Column(Integer, nullable=True)
 
-    error = Column(String, nullable=True)
-    requested_by = Column(String)              # username
-    created_at = Column(DateTime, default=datetime.utcnow)
+    error = Column(Text, nullable=True)
+    requested_by = Column(String)
+    created_at = Column(DateTime(timezone=True), default=utcnow, index=True)
+
 
 class ScanRecord(Base):
-    """One observed row from a scan — the raw feature snapshot for a server.
+    """One observed row from a scan — the feature snapshot for a server.
 
-    Kept so anomaly detection can be fitted against an organization's HISTORY
-    rather than the single uploaded batch. Batch-relative fitting made the same
-    server 'normal' in one file and 'anomalous' in another (audit S2-01).
+    Retained so anomaly detection fits against an organisation's HISTORY rather
+    than a single uploaded batch. Batch-relative fitting made the same server
+    'normal' in one file and 'anomalous' in another (audit S2-01).
     """
     __tablename__ = "scan_records"
 
     id = Column(Integer, primary_key=True, index=True)
     organization_id = Column(Integer, ForeignKey("organizations.id"), index=True, nullable=True)
-    scan_id = Column(Integer, ForeignKey("scans.id"), index=True)
+    scan_id = Column(Integer, ForeignKey("scans.id", ondelete="CASCADE"), index=True)
 
     server_id = Column(String, index=True)
-    features = Column(Text)          # JSON snapshot of the feature columns
+    features = Column(Text)                     # JSON snapshot of feature columns
     is_anomaly = Column(Boolean, default=False)
     anomaly_score = Column(String, nullable=True)
-    detector_version = Column(String, nullable=True)   # which model scored it
-    created_at = Column(DateTime, default=datetime.utcnow)
+    detector_version = Column(String, nullable=True)
+    created_at = Column(DateTime(timezone=True), default=utcnow)
+
 
 class FindingHistory(Base):
     """Append-only record of every lifecycle change on a finding.
 
-    A finding's current state is not enough for an audit — you must be able to
-    show who moved it, when, and from what. This table is never updated, only
-    appended to.
+    Current state alone is not auditable — you must be able to show who moved a
+    finding, when, and from what.
     """
     __tablename__ = "finding_history"
 
     id = Column(Integer, primary_key=True, index=True)
-    violation_id = Column(Integer, ForeignKey("violations.id"), index=True)
+    violation_id = Column(Integer, ForeignKey("violations.id", ondelete="CASCADE"), index=True)
     organization_id = Column(Integer, ForeignKey("organizations.id"), index=True, nullable=True)
 
     from_state = Column(String, nullable=True)
     to_state = Column(String)
-    note = Column(String, nullable=True)
+    note = Column(Text, nullable=True)
     changed_by = Column(String)
-    changed_at = Column(DateTime, default=datetime.utcnow)
+    changed_at = Column(DateTime(timezone=True), default=utcnow, index=True)
 
 
 class PostureSnapshot(Base):
     """Posture at a point in time.
 
-    The current score answers "where do we stand"; snapshots answer "are we
-    getting better or worse". Stored per scan so the trend is tied to real
-    evaluation runs rather than sampled arbitrarily.
+    The current score says where you stand; snapshots say whether you are
+    improving. Tied to real evaluation runs rather than sampled arbitrarily.
     """
     __tablename__ = "posture_snapshots"
 
     id = Column(Integer, primary_key=True, index=True)
     organization_id = Column(Integer, ForeignKey("organizations.id"), index=True, nullable=True)
-    scan_id = Column(Integer, ForeignKey("scans.id"), index=True, nullable=True)
+    scan_id = Column(Integer, ForeignKey("scans.id", ondelete="CASCADE"), index=True, nullable=True)
 
-    score = Column(String, nullable=True)          # null when not scoreable
+    score = Column(String, nullable=True)       # null when not scoreable
     controls_evaluated = Column(Integer, default=0)
     controls_passed = Column(Integer, default=0)
     controls_failed = Column(Integer, default=0)
     controls_unverified = Column(Integer, default=0)
     rubric_version = Column(String)
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime(timezone=True), default=utcnow, index=True)
