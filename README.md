@@ -1,190 +1,184 @@
-# 🎯 SkillMatch — Job Recommendation Engine
+# AI Compliance Engine
 
-A job search engine that ranks live listings against a user's skills using **BM25** — the ranking function behind Elasticsearch and Lucene — with **Jaccard similarity** computed alongside it for comparison.
+A multi-tenant compliance evaluation platform. It ingests infrastructure
+evidence, evaluates it against versioned controls mapped to regulatory clauses,
+and produces findings that remain reproducible and auditable months later.
 
-**Live demo:** https://skillmatch-vyva.onrender.com
+Deterministic rules decide compliance. An AI layer explains findings and drafts
+controls, but never assigns a status.
 
-> The demo runs on a free tier that sleeps when idle. The first request after a quiet period takes ~30–60s to wake the container; everything after that is fast.
+> **Status:** in active development. Phases 0–5 of an eight-phase plan are
+> implemented. Not production-certified — see [Limitations](#limitations).
 
 ---
 
 ## What it does
 
-Enter your skills as free text or a comma-separated list. The engine scores every indexed job listing, ranks them by relevance, and returns the top matches with matched terms highlighted.
-
 ```
-Skills in  →  BM25 scores the corpus  →  Jaccard re-scores the candidates  →  Ranked jobs out
-```
-
----
-
-## The interesting part: why the ranking works
-
-### Why BM25 over TF-IDF
-
-BM25 refines TF-IDF in two ways that matter for this data:
-
-- **Term-frequency saturation.** A listing mentioning "Python" ten times isn't ten times more relevant than one mentioning it once. TF-IDF scales linearly; BM25 flattens the curve.
-- **Length normalisation.** A verbose listing shouldn't outrank a focused one purely because it has more text to match against.
-
-### Why Jaccard is still here
-
-The original approach to this problem used Jaccard similarity — plain set overlap. It's kept because the comparison is instructive rather than decorative.
-
-Searching `java spring boot`, a listing whose skills are exactly `["Java", "Spring Boot"]` scores a **perfect 1.0 Jaccard** — total overlap. BM25 ranks fuller, more specific listings above it. Jaccard rewards *brevity*: a short skill list is mathematically easier to fully overlap with. Both scores are returned by the API so the difference is observable, not theoretical.
-
-### The background corpus
-
-This is the part I'd point at in a review.
-
-BM25's IDF component measures how rare a term is across the collection — it's what stops a generic tag from outweighing a distinctive skill. But the live corpus is only ~3,800 listings, which makes those statistics noisy. There isn't enough evidence to tell a rare skill apart from a common one.
-
-So IDF is estimated from a **much larger archived corpus of 31,970 listings** and those values are applied when ranking the live set. Using a large background collection to obtain reliable term statistics for a smaller target collection is standard practice in information retrieval.
-
-The scale of the problem it solves: in the archive, the generic tag `"IT Skills"` appears in **6,323 of 31,970 listings**. Without reliable IDF, it would carry the same weight as `"Kubernetes"`.
-
-The IDF formula matches `rank_bm25`'s `BM25Okapi._calc_idf` exactly — using a different formula would put the background values on a different scale to the ones they replace.
-
----
-
-## Architecture
-
-```
-Jooble API  ─┐
-             ├─→  fetch_jobs.py  →  dedupe  →  Supabase (jobs table)
-Adzuna API  ─┘                                       │
-                                                     ▼
-archived corpus (31,970)  ──→  IDF estimation  ──→  BM25 index  ──→  FastAPI  ──→  browser
-       (local JSON)                                                      │
-                                                                    Jaccard
-                                                                  re-scoring
+Evidence upload
+      │  stored + SHA-256 hashed, never discarded
+      ▼
+Deterministic rule engine ──► PASS / FAIL / ERROR / INSUFFICIENT_EVIDENCE
+      │
+      ├─► Findings ──► lifecycle workflow (OPEN → … → CLOSED)
+      ├─► Anomaly detection (fitted on tenant history)
+      ├─► Posture score (controls passing / controls evaluated)
+      └─► AI layer ──► explanations, drafted controls (human-approved)
 ```
 
-**Two-stage search.** BM25 scores the full corpus and selects a candidate pool; Jaccard re-scores only that pool. This mirrors how production recommenders separate candidate generation from re-ranking — cheap ranking across everything, more expensive scoring on a shortlist.
-
-**Graceful degradation.** If Supabase is unreachable or unconfigured, the app falls back to a committed local JSON snapshot and still starts. `GET /api/health` reports which path was taken, so a silent fallback in production is visible rather than mysterious.
-
-**The archive stays on disk deliberately.** It's static reference data used only for IDF estimation — putting it behind a network call would add latency and a failure mode for no benefit.
+Every finding links to the exact evidence file and the exact control **version**
+that produced it, so it can be re-derived and defended later.
 
 ---
 
-## Data
+## Design principles
 
-| | |
-|---|---|
-| Live listings | ~3,800 (Jooble + Adzuna, India) |
-| Background corpus | 31,970 archived listings |
-| Storage | Supabase (Postgres), local JSON fallback |
+**Fail closed.** When something cannot be done safely, the system stops and says
+so rather than guessing. Missing configuration prevents startup. A control that
+cannot be evaluated returns `INSUFFICIENT_EVIDENCE`, never `PASS`. A failed scan
+saves nothing.
 
-### Sourcing
+**AI proposes, deterministic rules decide.** No model output can set a
+compliance status. AI explains verdicts the engine already reached and drafts
+controls that a human must approve. Proven by a prompt-injection test suite:
+even a fully hijacked model cannot change a verdict.
 
-Listings come from **Adzuna** and **Jooble**, both of which offer free public APIs. LinkedIn, Wellfound and Internshala were evaluated and ruled out — none offers public API access, and the only routes to their data are paid third-party scrapers operating against those platforms' terms of service. Everything here uses officially sanctioned access.
+**Evidence over assertion.** Uploaded files are retained and hashed at ingest.
+Any finding can be traced to its source, and tampering is detectable.
 
-Adzuna contributes the large majority of records: it returns up to 50 results per page against Jooble's ~20, and full descriptions rather than truncated snippets.
+**Versioned truth.** Editing a control creates a new version; prior versions are
+never mutated, so historical findings stay tied to what was actually evaluated.
 
-### Cleaning
-
-The archived corpus had real quality problems worth documenting:
-
-| Issue | Scale | Handling |
-|---|---|---|
-| Duplicate listings (same job scraped under multiple search terms) | 21,190 of 53,160 (~40%) | Deduplicated by URL |
-| `>` prefix artifacts in skill strings | 43 records | Stripped |
-| Case-inconsistent duplicate skills within a listing | Widespread | Normalised |
-
-Deduplication matters beyond tidiness. IDF measures how rare a term is *across the collection* — leaving 21,190 duplicates in would have systematically distorted those statistics.
-
-Live records are deduplicated on both URL and a normalised `(title, company)` key, since the same listing appears on both aggregators under different URLs.
+**Tenant isolation.** Every tenant-owned query filters on organisation, proven
+by an automated isolation suite.
 
 ---
 
-## Tech stack
+## Stack
 
-| Layer | Tech |
-|---|---|
-| Backend | Python, FastAPI |
-| Ranking | rank-bm25 (BM25Okapi), custom Jaccard implementation |
-| Database | Supabase (Postgres) with row-level security |
-| Data sources | Adzuna API, Jooble API |
-| Frontend | Vanilla HTML/CSS/JS — no framework, no build step |
-| Testing | pytest |
-| Hosting | Render |
-
----
-
-## API
-
-| Endpoint | Description |
-|---|---|
-| `GET /api/search?q=<skills>&top_k=20` | Ranked results with BM25 and Jaccard scores |
-| `GET /api/health` | Index status, corpus sizes, and active data source |
-| `GET /docs` | Interactive documentation (auto-generated) |
+FastAPI · SQLAlchemy · PostgreSQL · Alembic · scikit-learn · ReportLab ·
+NVIDIA NIM (Nemotron) · vanilla HTML/CSS/JS
 
 ---
 
 ## Setup
 
 ```bash
-git clone https://github.com/meowddler/skillmatch.git
-cd skillmatch
+git clone https://github.com/meowddler/ai-compliance-engine.git
+cd ai-compliance-engine
 
 python -m venv venv
-venv\Scripts\Activate.ps1      # Windows
-# source venv/bin/activate     # macOS/Linux
+venv\Scripts\Activate.ps1        # Windows
+# source venv/bin/activate       # macOS/Linux
 
 pip install -r requirements.txt
+```
+
+Create a PostgreSQL database:
+
+```bash
+psql -U postgres -c "CREATE DATABASE compliance;"
+```
+
+Create `.env` in the project root (see `.env.example`):
+
+```
+SECRET_KEY=<python -c "import secrets; print(secrets.token_hex(32))">
+ALGORITHM=HS256
+ACCESS_TOKEN_EXPIRE_MINUTES=60
+DATABASE_URL=postgresql+psycopg2://postgres:PASSWORD@localhost:5432/compliance
+CORS_ORIGINS=http://127.0.0.1:8000,http://localhost:8000
+EVIDENCE_FRESHNESS_DAYS=90
+
+# AI layer (optional — omit to run without live inference)
+AI_PROVIDER=nvidia
+NVIDIA_API_KEY=
+AI_BASE_URL=https://integrate.api.nvidia.com/v1
+AI_MODEL=nvidia/nemotron-3-ultra-550b-a55b
+```
+
+`SECRET_KEY` and `DATABASE_URL` are required; the application refuses to start
+without them.
+
+Create the schema and seed reference data:
+
+```bash
+alembic upgrade head
+python -m backend.seed_users
+python -m backend.seed_rules
+python -m backend.seed_frameworks
+```
+
+Run:
+
+```bash
 uvicorn backend.app:app --reload
 ```
 
-Open **http://127.0.0.1:8000**
+Open **http://127.0.0.1:8000/login.html**. The backend serves the frontend, so
+both share one origin — opening the HTML files directly will not work.
 
-> The app must run through uvicorn — FastAPI serves both the API and the frontend. Opening `index.html` directly, or via a static server, will fail because `/api/search` won't exist.
+Development accounts: `admin` / `admin123`, `auditor1` / `auditor123`,
+`analyst1` / `analyst123`. Override via `ADMIN_PASSWORD` etc. before exposing
+the service to a network.
 
-### Environment
-
-Create a `.env` at the project root. All values are optional — the app falls back to the local snapshot without them.
-
-```
-SUPABASE_URL=...
-SUPABASE_KEY=...        # publishable/anon key, not the service role key
-JOOBLE_API_KEY=...      # only needed to refresh data
-ADZUNA_APP_ID=...
-ADZUNA_APP_KEY=...
-```
-
-### Refreshing the data
-
-```bash
-python backend/fetch_jobs.py          # pull from both APIs into data/jobs_live.json
-python backend/upload_to_supabase.py  # push to Supabase
-```
-
-The `jobs` table has row-level security enabled with a select-only policy, so the publishable key can read but not write. Seeding requires a temporary insert policy, dropped immediately afterwards.
+Interactive API docs: **http://127.0.0.1:8000/docs**
 
 ---
 
 ## Tests
 
 ```bash
-python -m pytest tests/ -v
+python -m pytest tests/ -q
 ```
 
-Covers tokenisation (including `C++`, `C#`, `.NET`), Jaccard arithmetic, ranking behaviour, background-corpus IDF, Supabase loading and fallback, and every API endpoint.
-
-One test documents a genuine BM25 edge case: a term appearing in *every* document of a corpus gets an IDF at or near zero, so a single-document corpus scores everything zero and returns nothing. That's BM25 behaving correctly, and it's precisely the small-corpus problem the background corpus exists to solve.
-
----
-
-## Known limitations
-
-- **Exact-token matching.** "ML" won't match "Machine Learning" — BM25 operates on tokens, not meaning. A semantic embedding layer would address this.
-- **No formal evaluation.** Ranking quality is assessed qualitatively. A labelled query set with Precision@K would make this rigorous.
-- **Source imbalance.** Adzuna's fuller descriptions give it more terms to match on, so it dominates results even where Jooble holds comparable listings.
-- **India-scoped.** Both fetchers are configured for the Indian market.
-- **Cold starts.** Free-tier hosting sleeps when idle.
+Covers rule evaluation and its failure modes, API behaviour, tenant isolation,
+and prompt-injection resistance. Some tests make live AI calls, so a full run
+takes 1–3 minutes.
 
 ---
 
-## Attribution
+## Development history
 
-Job listing data is retrieved from the Adzuna and Jooble public APIs. The archived corpus originates from a publicly available scraped dataset. The search engine, ranking pipeline, data pipeline, API and interface were built independently.
+Built against an independent audit that scored the original prototype 21/100
+with 31 defects.
+
+| Phase | Focus | State |
+|---|---|---|
+| 0 | Security containment — all 4 critical and 7 high findings | Complete |
+| 1 | Domain model — PostgreSQL, Alembic, tenancy, control versioning, frameworks | Complete |
+| 2 | Evidence — persistence, hashing, tamper detection, provenance, freshness | Complete |
+| 3 | AI layer — provider abstraction, prompt registry, audit trail, injection defence | Complete |
+| 4 | Risk and findings — denominator-based posture, finding lifecycle | Complete |
+| 5 | Continuous compliance — freshness monitoring, change detection | Core complete |
+| 6–8 | Audit hardening, enterprise concerns, deployment | Not started |
+
+Notable fixes: hardcoded JWT secret; four tenant-isolation defects; stored XSS
+across four render sites; controls silently passing when a rule could not run or
+a data cell was blank; anomaly detection fitted per-batch rather than per-tenant;
+a compliance score with no denominator that fell when unchanged data was
+re-scanned.
+
+---
+
+## Limitations
+
+Stated plainly rather than discovered later:
+
+- **No background job queue.** Evaluation runs inside the HTTP request. Fine at
+  current scale; a queue is required before it is not.
+- **No notifications.** Requires SMTP or Slack credentials.
+- **No cloud connectors.** Evidence is uploaded manually; automated collection
+  from AWS/Azure/Okta requires accounts not available here.
+- **No scheduler.** Freshness and re-evaluation logic exists and is side-effect
+  free, but is invoked on demand rather than on a timer.
+- **Audit log is append-only by convention, not cryptographically chained.**
+  Hash chaining is Phase 6.
+- **Not penetration tested**, and not certified against any framework.
+
+---
+
+## Disclaimer
+
+A learning and portfolio project. Not a certified compliance product; do not
+rely on it for regulatory attestation.
