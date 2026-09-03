@@ -174,3 +174,148 @@ def test_zero_and_false_are_real_values_not_missing():
     rule_false = FakeRule("mfa_off", "HIGH", "mfa disabled",
                           [{"field": "mfa_enabled", "operator": "==", "value": False}])
     assert evaluate_rule_status(row, rule_false)["status"] == Status.FAIL
+
+
+
+# --- Expression tree: OR, NOT, nesting ------------------------------------
+
+def test_or_fires_when_either_branch_matches():
+    rule = FakeRule("mfa_or_vpn", "HIGH", "needs MFA or VPN",
+                    {"any": [{"field": "mfa_enabled", "operator": "==", "value": False},
+                             {"field": "vpn_only", "operator": "==", "value": False}]})
+    assert evaluate_rule_status({"mfa_enabled": False, "vpn_only": True}, rule)["status"] == Status.FAIL
+    assert evaluate_rule_status({"mfa_enabled": True, "vpn_only": True}, rule)["status"] == Status.PASS
+
+
+def test_not_inverts_result():
+    rule = FakeRule("must_encrypt", "HIGH", "encryption required",
+                    {"not": {"field": "encrypted", "operator": "==", "value": True}})
+    assert evaluate_rule_status({"encrypted": True}, rule)["status"] == Status.PASS
+    assert evaluate_rule_status({"encrypted": False}, rule)["status"] == Status.FAIL
+
+
+def test_nested_all_containing_any():
+    """Production servers must have both encryption and backups."""
+    rule = FakeRule("prod_hardening", "HIGH", "prod requires encryption and backup",
+                    {"all": [
+                        {"field": "env", "operator": "==", "value": "production"},
+                        {"any": [{"field": "encrypted", "operator": "==", "value": False},
+                                 {"field": "backup_enabled", "operator": "==", "value": False}]}]})
+    assert evaluate_rule_status(
+        {"env": "production", "encrypted": False, "backup_enabled": True}, rule)["status"] == Status.FAIL
+    assert evaluate_rule_status(
+        {"env": "production", "encrypted": True, "backup_enabled": True}, rule)["status"] == Status.PASS
+    # Not production, so the rule does not apply even though both are off.
+    assert evaluate_rule_status(
+        {"env": "dev", "encrypted": False, "backup_enabled": False}, rule)["status"] == Status.PASS
+
+
+def test_legacy_flat_list_still_means_and():
+    """Every rule written before the tree existed must keep working."""
+    rule = FakeRule("legacy", "HIGH", "flat AND",
+                    [{"field": "port_exposed", "operator": "==", "value": True},
+                     {"field": "mfa_enabled", "operator": "==", "value": False}])
+    assert evaluate_rule_status({"port_exposed": True, "mfa_enabled": False}, rule)["status"] == Status.FAIL
+    assert evaluate_rule_status({"port_exposed": True, "mfa_enabled": True}, rule)["status"] == Status.PASS
+
+
+# --- Three-valued logic ---------------------------------------------------
+# The subtle part. Collapsing "unverifiable" into true or false would either
+# invent findings or hide real ones.
+
+def test_or_with_one_true_branch_settles_despite_missing_evidence():
+    """A satisfied branch settles an OR — the unverifiable branch cannot change it."""
+    rule = FakeRule("or_rule", "HIGH", "either",
+                    {"any": [{"field": "a", "operator": "==", "value": 1},
+                             {"field": "b", "operator": "==", "value": 1}]})
+    assert evaluate_rule_status({"a": 1}, rule)["status"] == Status.FAIL
+
+
+def test_or_with_no_true_branch_and_missing_evidence_is_unverifiable():
+    """Nothing matched, but the missing branch might have — so we cannot conclude."""
+    rule = FakeRule("or_rule", "HIGH", "either",
+                    {"any": [{"field": "a", "operator": "==", "value": 1},
+                             {"field": "b", "operator": "==", "value": 1}]})
+    assert evaluate_rule_status({"a": 9}, rule)["status"] == Status.INSUFFICIENT_EVIDENCE
+
+
+def test_and_with_one_false_branch_settles_despite_missing_evidence():
+    """A failed branch settles an AND — the rule cannot fire regardless."""
+    rule = FakeRule("and_rule", "HIGH", "both",
+                    {"all": [{"field": "a", "operator": "==", "value": 1},
+                             {"field": "b", "operator": "==", "value": 1}]})
+    assert evaluate_rule_status({"a": 9}, rule)["status"] == Status.PASS
+
+
+def test_and_with_all_true_but_missing_evidence_is_unverifiable():
+    """Everything checked passed, but the missing branch might have been false."""
+    rule = FakeRule("and_rule", "HIGH", "both",
+                    {"all": [{"field": "a", "operator": "==", "value": 1},
+                             {"field": "b", "operator": "==", "value": 1}]})
+    assert evaluate_rule_status({"a": 1}, rule)["status"] == Status.INSUFFICIENT_EVIDENCE
+
+
+def test_not_of_unknown_stays_unknown():
+    """Negating something unverifiable does not make it verifiable."""
+    rule = FakeRule("neg", "HIGH", "not missing",
+                    {"not": {"field": "absent", "operator": "==", "value": 1}})
+    assert evaluate_rule_status({"other": 1}, rule)["status"] == Status.INSUFFICIENT_EVIDENCE
+
+
+# --- New operators --------------------------------------------------------
+
+def test_regex_operator():
+    rule = FakeRule("pw_policy", "HIGH", "lowercase only",
+                    {"field": "pw", "operator": "regex", "value": "^[a-z]+$"})
+    assert evaluate_rule_status({"pw": "abc"}, rule)["status"] == Status.FAIL
+    assert evaluate_rule_status({"pw": "Abc1"}, rule)["status"] == Status.PASS
+
+
+def test_exists_operators_answer_when_field_absent():
+    """Presence checks must answer even when the field is missing — that absence
+    is the thing being tested, not an obstacle to testing it."""
+    exists = FakeRule("has_owner", "LOW", "owner recorded",
+                      {"field": "owner", "operator": "exists"})
+    assert evaluate_rule_status({}, exists)["status"] == Status.PASS
+    assert evaluate_rule_status({"owner": "amy"}, exists)["status"] == Status.FAIL
+
+    missing = FakeRule("no_owner", "LOW", "owner absent",
+                       {"field": "owner", "operator": "not_exists"})
+    assert evaluate_rule_status({}, missing)["status"] == Status.FAIL
+
+
+def test_between_and_not_in_operators():
+    btw = FakeRule("stale_window", "LOW", "30-60 days",
+                   {"field": "days", "operator": "between", "value": [30, 60]})
+    assert evaluate_rule_status({"days": 45}, btw)["status"] == Status.FAIL
+    assert evaluate_rule_status({"days": 90}, btw)["status"] == Status.PASS
+
+    nin = FakeRule("odd_port", "MEDIUM", "non-standard port",
+                   {"field": "port", "operator": "not_in", "value": [80, 443]})
+    assert evaluate_rule_status({"port": 8080}, nin)["status"] == Status.FAIL
+    assert evaluate_rule_status({"port": 443}, nin)["status"] == Status.PASS
+
+
+# --- Malformed trees fail loudly ------------------------------------------
+
+def test_malformed_trees_are_errors_not_silent_passes():
+    cases = [
+        ("empty all", {"all": []}),
+        ("empty any", {"any": []}),
+        ("unknown operator", {"field": "x", "operator": "BOOM", "value": 1}),
+        ("two combinators", {"all": [{"field": "a", "operator": "==", "value": 1}], "any": []}),
+        ("invalid regex", {"field": "x", "operator": "regex", "value": "([unclosed"}),
+        ("missing value", {"field": "x", "operator": "=="}),
+    ]
+    for label, cond in cases:
+        rule = FakeRule("bad", "HIGH", label, cond)
+        assert evaluate_rule_status({"x": "a", "a": 1}, rule)["status"] == Status.ERROR, label
+
+
+def test_excessive_nesting_is_rejected():
+    """A depth limit bounds both accidental and malicious rule structures."""
+    node = {"field": "a", "operator": "==", "value": 1}
+    for _ in range(15):
+        node = {"all": [node]}
+    rule = FakeRule("deep", "HIGH", "too deep", node)
+    assert evaluate_rule_status({"a": 1}, rule)["status"] == Status.ERROR
