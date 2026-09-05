@@ -1,0 +1,105 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    # The test suite talks to a real PostgreSQL rather than a stand-in, so the
+    # migrations and tenant-isolation queries are exercised against the database
+    # the application actually uses.
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: compliance_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    env:
+      # Test-only values. Nothing here is a real credential.
+      SECRET_KEY: ci-test-secret-key-not-used-anywhere-real-0123456789
+      ALGORITHM: HS256
+      ACCESS_TOKEN_EXPIRE_MINUTES: "60"
+      DATABASE_URL: postgresql+psycopg2://postgres:postgres@localhost:5432/compliance_test
+      CORS_ORIGINS: http://127.0.0.1:8000
+      EVIDENCE_FRESHNESS_DAYS: "90"
+      # No AI key: the suite must pass without live inference, so a missing
+      # provider is a supported configuration rather than a broken build.
+      AI_PROVIDER: stub
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install ruff pip-audit
+
+      - name: Generate encryption keys for the test run
+        run: |
+          python - <<'EOF'
+          from cryptography.fernet import Fernet
+          import os
+          k1, k2 = Fernet.generate_key().decode(), Fernet.generate_key().decode()
+          with open(os.environ["GITHUB_ENV"], "a") as fh:
+              fh.write(f"ENCRYPTION_KEYS=k1:{k1},k2:{k2}\n")
+              fh.write("ENCRYPTION_ACTIVE_KEY_ID=k1\n")
+          EOF
+
+      - name: Apply migrations
+        run: alembic upgrade head
+
+      - name: Seed reference data
+        run: |
+          python -m backend.seed_users
+          python -m backend.seed_rules
+          python -m backend.seed_frameworks
+
+      - name: Lint
+        run: ruff check backend tests
+
+      - name: Run tests
+        run: python -m pytest tests/ -q
+
+  security:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install security tooling
+        run: |
+          python -m pip install --upgrade pip
+          pip install bandit pip-audit
+          pip install -r requirements.txt
+
+      - name: Static security analysis
+        # Fails the build on HIGH severity findings. A scan that reports
+        # problems but never blocks a merge trains people to ignore it.
+        run: bandit -r backend -ll -x backend/__pycache__
+
+      - name: Dependency vulnerability audit
+        run: pip-audit --strict --ignore-vuln GHSA-4xh5-x5gv-qwph
