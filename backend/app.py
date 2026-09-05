@@ -254,7 +254,10 @@ async def upload_logs(file: UploadFile = File(...), db: Session = Depends(get_db
 
     log_action(db, current_user.username, "scan_run",
                f"Scanned {file.filename} ({len(df)} rows)",
-               organization_id=current_user.organization_id)
+               organization_id=current_user.organization_id,
+               entity_type="Scan", entity_id=scan.id,
+               after={"scan_id": scan.id, "filename": file.filename,
+                      "rows_scanned": len(df), "evidence_sha256": sha256})
     db.commit()
     return {"scan_id": scan.id, "filename": file.filename, "rows_scanned": len(df),
             "anomaly_detection": anomaly_meta, "findings": rule_results}
@@ -355,6 +358,9 @@ def update_finding_lifecycle(violation_id: int, req: LifecycleUpdateRequest,
     except InvalidTransition as exc:
         raise HTTPException(status_code=400, detail=str(exc))
 
+    from backend.utils.audit import snapshot_finding
+    before_snapshot = snapshot_finding(v)    
+
     db.add(FindingHistory(
         violation_id=v.id,
         organization_id=current_user.organization_id,
@@ -371,7 +377,10 @@ def update_finding_lifecycle(violation_id: int, req: LifecycleUpdateRequest,
     log_action(db, current_user.username, "finding_lifecycle_changed",
                f"Finding #{v.id}: {current_state} -> {req.to_state}"
                + (f" ({req.note})" if req.note else ""),
-               organization_id=current_user.organization_id)
+               organization_id=current_user.organization_id,
+               entity_type="Finding", entity_id=v.id,
+               before=before_snapshot, after=snapshot_finding(v),
+               reason=req.note)
     db.commit()
 
     return {"violation_id": v.id, "lifecycle": v.lifecycle,
@@ -535,9 +544,12 @@ def create_rule(rule: RuleCreate, db: Session = Depends(get_db), current_user: U
     db.add(db_rule)
     db.commit()
     db.refresh(db_rule)
+    from backend.utils.audit import snapshot_rule
     log_action(db, current_user.username, "rule_created",
                f"Created rule: {db_rule.name}",
-               organization_id=current_user.organization_id)
+               organization_id=current_user.organization_id,
+               entity_type="Rule", entity_id=db_rule.id,
+               after=snapshot_rule(db_rule))
     db.commit()
     return db_rule
 
@@ -567,6 +579,11 @@ def update_rule(rule_id: int, rule: RuleUpdate, db: Session = Depends(get_db), c
     # Immutable versioning: the old version is never mutated. We retire it and
     # create a new version carrying the edits. Historical findings that point to
     # the old version remain reproducible against exactly what was evaluated.
+    from backend.utils.audit import snapshot_rule
+    # Captured before mutation — an after-the-fact snapshot would record the
+    # new state twice and prove nothing.
+    before_snapshot = snapshot_rule(db_rule)
+
     root_id = db_rule.parent_id or db_rule.id  # all versions share the original's id as root
     db_rule.is_current = False
 
@@ -593,6 +610,9 @@ def update_rule(rule_id: int, rule: RuleUpdate, db: Session = Depends(get_db), c
         "rule_updated",
         f"Rule '{new_rule.name}' -> v{new_rule.version} (id={new_rule.id}): " + "; ".join(changes),
         organization_id=current_user.organization_id,
+        entity_type="Rule", entity_id=new_rule.id,
+        before=before_snapshot, after=snapshot_rule(new_rule),
+        reason="; ".join(changes),
     )
     db.commit()
 
@@ -727,12 +747,16 @@ def delete_rule(rule_id: int, db: Session = Depends(get_db), current_user: User 
     ).first()
     if not db_rule:
         raise HTTPException(status_code=404, detail="Rule not found")
+    from backend.utils.audit import snapshot_rule
     rule_name = db_rule.name
+    before_snapshot = snapshot_rule(db_rule)   # the only remaining record of it
     db.delete(db_rule)
     db.commit()
     log_action(db, current_user.username, "rule_deleted",
                f"Deleted rule: {rule_name}",
-               organization_id=current_user.organization_id)
+               organization_id=current_user.organization_id,
+               entity_type="Rule", entity_id=rule_id,
+               before=before_snapshot)
     db.commit()
     return {"message": "Rule deleted"}
 

@@ -138,3 +138,41 @@ def chain_stats(db: Session, organization_id):
         AuditLog.entry_hash.isnot(None)).scalar() or 0
     return {"total_entries": total, "chained_entries": chained,
             "unchained_legacy_entries": total - chained}
+
+# --- Controlled audit representations --------------------------------------
+# Deliberately explicit rather than serialising whole ORM objects: an audit
+# record is permanent, so what goes into it is a decision, not an accident.
+# Adding a column to a model must not silently start recording it forever.
+
+def snapshot_rule(rule) -> dict:
+    """The audit-visible shape of a control."""
+    if rule is None:
+        return None
+    return {
+        "id": rule.id,
+        "name": rule.name,
+        "version": rule.version,
+        "is_current": rule.is_current,
+        "description": rule.description,
+        "framework": rule.framework,
+        "severity": rule.severity,
+        "remediation": rule.remediation,
+        "condition": rule.condition,
+        "active": rule.active,
+    }
+
+
+def snapshot_finding(v) -> dict:
+    """The audit-visible shape of a finding."""
+    if v is None:
+        return None
+    return {
+        "id": v.id,
+        "server_id": v.server_id,
+        "rule_name": v.rule_name,
+        "rule_id": v.rule_id,
+        "evidence_id": v.evidence_id,
+        "severity": v.severity,
+        "status": v.status,
+        "lifecycle": v.lifecycle,
+    }
