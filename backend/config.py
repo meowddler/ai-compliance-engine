@@ -93,3 +93,34 @@ if AI_PROVIDER not in _ALLOWED_PROVIDERS:
 NVIDIA_API_KEY = os.getenv("NVIDIA_API_KEY", "")
 AI_BASE_URL = os.getenv("AI_BASE_URL", "https://integrate.api.nvidia.com/v1")
 AI_MODEL = os.getenv("AI_MODEL", "nvidia/nemotron-3-ultra-550b-a55b")
+
+
+
+# --- Encryption -------------------------------------------------------------
+# Keys are held as id:key pairs so data encrypted under an old key stays
+# readable after rotation. ENCRYPTION_ACTIVE_KEY_ID names which one is used for
+# new writes; the others remain available for decryption only.
+#
+# Format: ENCRYPTION_KEYS=k1:<base64key>,k2:<base64key>
+
+def _parse_keys(raw: str) -> dict:
+    keys = {}
+    for pair in raw.split(","):
+        pair = pair.strip()
+        if not pair:
+            continue
+        if ":" not in pair:
+            raise RuntimeError("ENCRYPTION_KEYS entries must be 'key_id:key'.")
+        key_id, key = pair.split(":", 1)
+        keys[key_id.strip()] = key.strip()
+    return keys
+
+
+ENCRYPTION_KEYS = _parse_keys(os.getenv("ENCRYPTION_KEYS", ""))
+ENCRYPTION_ACTIVE_KEY_ID = os.getenv("ENCRYPTION_ACTIVE_KEY_ID", "")
+
+if ENCRYPTION_KEYS and ENCRYPTION_ACTIVE_KEY_ID not in ENCRYPTION_KEYS:
+    raise RuntimeError(
+        f"ENCRYPTION_ACTIVE_KEY_ID {ENCRYPTION_ACTIVE_KEY_ID!r} is not present in "
+        f"ENCRYPTION_KEYS. Available: {', '.join(sorted(ENCRYPTION_KEYS)) or 'none'}"
+    )

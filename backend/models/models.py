@@ -134,6 +134,10 @@ class Evidence(Base):
     sha256 = Column(String, index=True)         # of the raw bytes as uploaded
     size_bytes = Column(Integer)
     storage_path = Column(String)
+    # Encrypted at rest: the filesystem path reveals the org id and a content
+    # hash, and the uploader identifies a person. Both are stored as ciphertext
+    # tagged with the key that produced them.
+    storage_path_encrypted = Column(Text, nullable=True)
     uploaded_by = Column(String)
     collected_at = Column(DateTime(timezone=True), default=utcnow)
 

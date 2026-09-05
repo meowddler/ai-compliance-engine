@@ -162,6 +162,7 @@ async def upload_logs(file: UploadFile = File(...), db: Session = Depends(get_db
         db.add(scan)
         db.flush()  # assigns scan.id without committing yet
 
+        from backend.utils.encryption import encrypt
         evidence = Evidence(
             organization_id=current_user.organization_id,
             scan_id=scan.id,
@@ -170,6 +171,9 @@ async def upload_logs(file: UploadFile = File(...), db: Session = Depends(get_db
             sha256=sha256,
             size_bytes=len(contents),
             storage_path=storage_path,
+            # Also stored encrypted: a database dump then reveals ciphertext
+            # rather than a path disclosing org id and content hash.
+            storage_path_encrypted=encrypt(storage_path),
             uploaded_by=current_user.username,
         )
         db.add(evidence)
@@ -1205,3 +1209,13 @@ def logout_all_sessions(db: Session = Depends(get_db),
 
 # Serve the frontend. Must be last — it catches all routes not claimed above.
 app.mount("/", StaticFiles(directory="frontend", html=True), name="frontend")
+
+@app.get("/security/encryption-status", tags=["Audit"])
+def get_encryption_status(current_user: User = Depends(require_capability(Capability.AUDIT_READ))):
+    """Report the real encryption configuration.
+
+    Deliberately states when encryption is disabled rather than staying silent —
+    an operator must not assume data is protected when it is not.
+    """
+    from backend.utils.encryption import encryption_status
+    return encryption_status()
