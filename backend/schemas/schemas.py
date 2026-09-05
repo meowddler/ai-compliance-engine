@@ -7,7 +7,7 @@ rejected at the door.
 """
 
 from enum import Enum
-from typing import Any, List, Optional
+from typing import Any, Optional
 
 from pydantic import BaseModel, field_validator
 

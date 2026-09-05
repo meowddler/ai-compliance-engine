@@ -1,36 +1,51 @@
 # Lint configuration.
 #
-# The default rule set is broad, so a few families are disabled deliberately
-# rather than silenced case by case. Each exclusion has a reason; anything not
-# listed here is expected to pass.
+# Scoped deliberately to rules that catch DEFECTS, not style preferences. A
+# linter reporting hundreds of findings on working code gets ignored, and an
+# ignored linter is worse than none — so formatting opinions are left out and
+# correctness rules are kept.
 
 target-version = "py312"
-line-length = 110
+line-length = 120
 
-exclude = ["venv", "alembic/versions", "__pycache__", ".pytest_cache"]
+exclude = ["venv", ".venv", "alembic/versions", "__pycache__", ".pytest_cache", "build", "dist"]
 
 [lint]
-select = ["E", "F", "I", "B", "UP", "SIM", "DTZ", "ASYNC", "TRY", "BLE", "C4", "PL", "FURB"]
+select = [
+    "E9",    # syntax and runtime errors
+    "F",     # pyflakes: undefined names, unused variables, bad imports
+    "B",     # bugbear: likely bugs
+    "DTZ",   # naive datetimes — the source of two real defects here
+    "ASYNC", # blocking calls inside async functions
+    "S",     # security rules
+    "PLE",   # pylint errors only
+]
 
 ignore = [
-    # FastAPI expresses dependencies as call expressions in default arguments —
-    # Depends(...), File(...), Query(...). It is the documented idiom of the
-    # framework, not the mutable-default hazard this rule targets.
+    # FastAPI expresses dependencies as calls in default arguments —
+    # Depends(...), File(...). It is the framework's documented idiom, not the
+    # mutable-default hazard this rule targets.
     "B008",
-    # Long explanatory comments are deliberate in this codebase; wrapping them
-    # to satisfy a column limit would fragment the reasoning they carry.
+    # Exception chaining. Worth doing, but the value here is marginal: these are
+    # HTTPExceptions raised at API boundaries where the original traceback is
+    # already logged, and several deliberately suppress the cause to avoid
+    # leaking internals into a client-facing error.
+    "B904",
+    # Long explanatory comments are deliberate; wrapping them to satisfy a
+    # column limit would fragment the reasoning they carry.
     "E501",
-    # Magic values in comparisons are frequently HTTP status codes and severity
-    # thresholds, where the literal is clearer than a named constant.
-    "PLR2004",
-    # Argument-count limits do not suit FastAPI endpoint signatures, which
-    # declare their dependencies explicitly.
-    "PLR0913",
+    # asserts are how pytest expresses expectations.
+    "S101",
+    # Binding to all interfaces is a deployment decision, not a code defect.
+    "S104",
 ]
 
 [lint.per-file-ignores]
-# Tests deliberately import inside functions to exercise import-time behaviour,
-# and assert on values a linter reads as unused.
-"tests/*" = ["F401", "F811", "PLR0915"]
-# Alembic templates are generated code.
-"alembic/env.py" = ["F401", "I001"]
+# Tests use fixed credentials against a disposable database, import inside
+# functions to exercise import-time behaviour, and build malformed input.
+"tests/*" = ["S105", "S106", "S107", "F401", "F811", "B017"]
+# Development passwords, overridable by environment variables.
+"backend/seed_users.py" = ["S105", "S106"]
+# "PASS" is an evaluation status, not a credential.
+"backend/rules/rule_engine.py" = ["S105"]
+"alembic/env.py" = ["F401"]

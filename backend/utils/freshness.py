@@ -9,7 +9,7 @@ and never leaving it as PASS. This is the same fail-closed principle used
 throughout the engine: when we cannot conclude, say so explicitly.
 """
 
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 # Statuses that can be degraded. A control that already FAILED stays failed —
 # stale evidence does not erase a known violation.
@@ -21,14 +21,18 @@ def is_stale(collected_at, freshness_days, now=None):
     """True if evidence has aged past its validity window."""
     if collected_at is None:
         return True                       # unknown age cannot be trusted as fresh
-    now = now or datetime.utcnow()
+    # Timezone-aware: evidence timestamps carry an offset, and subtracting a
+    # naive datetime from an aware one raises TypeError.
+    now = now or datetime.now(timezone.utc)
     return (now - collected_at) > timedelta(days=freshness_days)
 
 
 def age_days(collected_at, now=None):
     if collected_at is None:
         return None
-    now = now or datetime.utcnow()
+    # Timezone-aware: evidence timestamps carry an offset, and subtracting a
+    # naive datetime from an aware one raises TypeError.
+    now = now or datetime.now(timezone.utc)
     return (now - collected_at).days
 
 
@@ -40,7 +44,9 @@ def evaluate_staleness(findings, freshness_days, now=None):
     Returns a list of degradation decisions. Nothing is mutated here — the
     caller applies them, so this stays testable and side-effect free.
     """
-    now = now or datetime.utcnow()
+    # Timezone-aware: evidence timestamps carry an offset, and subtracting a
+    # naive datetime from an aware one raises TypeError.
+    now = now or datetime.now(timezone.utc)
     decisions = []
 
     for f in findings:

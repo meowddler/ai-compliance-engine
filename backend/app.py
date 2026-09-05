@@ -21,10 +21,10 @@ from backend.config import CORS_ORIGINS, EVIDENCE_FRESHNESS_DAYS, ACCESS_TOKEN_E
 from fastapi.staticfiles import StaticFiles
 from datetime import datetime, timezone
 from backend.ai.service import explain_finding
-from backend.models.models import AIInteraction
 from pydantic import BaseModel
 from backend.models.models import PostureSnapshot
-from backend.core.permissions import Capability, require_capability, has_capability
+from backend.core.permissions import Capability, require_capability
+import anyio
 
 TAGS_METADATA = [
     {"name": "Auth", "description": "Login and token issue."},
@@ -123,7 +123,10 @@ def build_anomaly_map(df):
             }
     return anomaly_map
 
-
+def _write_evidence(path: str, data: bytes) -> None:
+    """Persist raw evidence bytes. Separated so it can be run off the event loop."""
+    with open(path, "wb") as fh:
+        fh.write(data)
 
 @app.post("/upload-logs", tags=["Scans"])
 async def upload_logs(file: UploadFile = File(...), db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
@@ -149,8 +152,10 @@ async def upload_logs(file: UploadFile = File(...), db: Session = Depends(get_db
     evidence_dir = os.path.join("evidence_store", str(current_user.organization_id))
     os.makedirs(evidence_dir, exist_ok=True)
     storage_path = os.path.join(evidence_dir, f"{sha256}_{file.filename}")
-    with open(storage_path, "wb") as f:
-        f.write(contents)
+    # Written off the event loop. A blocking write inside an async handler
+    # stalls every other request for its duration — unnoticeable on a 200-byte
+    # CSV, material on a large upload.
+    await anyio.to_thread.run_sync(lambda: _write_evidence(storage_path, contents))
     # --- Do ALL processing before touching the database. ---
     # If any of this fails, we haven't created a scan record, so no ghost scan
     # can be left behind.

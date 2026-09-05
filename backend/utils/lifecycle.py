@@ -9,7 +9,6 @@ workflow meaningful to an auditor — a CLOSED finding provably went through
 verification.
 """
 
-from datetime import datetime
 
 OPEN = "OPEN"
 ACKNOWLEDGED = "ACKNOWLEDGED"

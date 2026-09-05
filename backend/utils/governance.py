@@ -17,7 +17,7 @@ from datetime import datetime, timedelta, timezone
 from sqlalchemy.orm import Session
 
 from backend.models.models import (
-    AuditLog, Evidence, LegalHold, RetentionPolicy, Scan, ScanRecord, Violation,
+    AuditLog, Evidence, LegalHold, RetentionPolicy, ScanRecord, Violation,
 )
 
 # Classes that retention may never delete, whatever a policy says.
