@@ -98,6 +98,32 @@ def login(request: Request, form_data: OAuth2PasswordRequestForm = Depends(),
             "refresh_token": raw_refresh,
             "expires_in_minutes": ACCESS_TOKEN_EXPIRE_MINUTES}
 
+def build_anomaly_map(df):
+    """Map server_id -> anomaly info, tolerant of duplicate server_ids.
+
+    A CSV can legitimately contain several rows for the same server. Using
+    set_index().to_dict("index") crashes when server_id repeats, and keeping
+    only one row would silently discard data. We keep the most anomalous row
+    per server — lowest score is most anomalous for IsolationForest — so a
+    server flagged in ANY row is treated as anomalous rather than excused by a
+    later clean-looking duplicate.
+    """
+    if "server_id" not in df.columns:
+        return {}
+
+    anomaly_map = {}
+    for _, r in df.iterrows():
+        sid = r["server_id"]
+        score = r.get("anomaly_score")
+        prev = anomaly_map.get(sid)
+        if prev is None or (score is not None and score < prev["anomaly_score"]):
+            anomaly_map[sid] = {
+                "is_anomaly": bool(r.get("is_anomaly", False)),
+                "anomaly_score": score if score is not None else 0.0,
+            }
+    return anomaly_map
+
+
 
 @app.post("/upload-logs", tags=["Scans"])
 async def upload_logs(file: UploadFile = File(...), db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):

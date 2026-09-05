@@ -92,11 +92,11 @@ def _is_missing(value):
     """True for values carrying no information: None, NaN, or blank text."""
     if value is None:
         return True
-    if isinstance(value, float) and value != value:      # NaN
+    # NaN is the only value that is not equal to itself. Checked directly rather
+    # than via math.isnan so the function stays dependency-free.
+    if isinstance(value, float) and value != value:  # noqa: PLR0124
         return True
-    if isinstance(value, str) and not value.strip():
-        return True
-    return False
+    return bool(isinstance(value, str) and not value.strip())
 
 
 # --------------------------------------------------------------------------

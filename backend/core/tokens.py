@@ -97,7 +97,7 @@ def consume_refresh_token(db: Session, raw_token: str) -> RefreshResult:
     if record.revoked_at is not None:
         # A revoked token being presented means it was rotated and then reused.
         # Treat the whole family as compromised.
-        revoked = revoke_family(db, record.family_id, "Replay of a revoked token detected.")
+        revoke_family(db, record.family_id, "Replay of a revoked token detected.")
         return RefreshResult(False, error="Refresh token has been revoked.",
                              replay=True, record=record)
 
