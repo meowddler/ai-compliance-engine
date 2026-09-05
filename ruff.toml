@@ -1,0 +1,36 @@
+# Lint configuration.
+#
+# The default rule set is broad, so a few families are disabled deliberately
+# rather than silenced case by case. Each exclusion has a reason; anything not
+# listed here is expected to pass.
+
+target-version = "py312"
+line-length = 110
+
+exclude = ["venv", "alembic/versions", "__pycache__", ".pytest_cache"]
+
+[lint]
+select = ["E", "F", "I", "B", "UP", "SIM", "DTZ", "ASYNC", "TRY", "BLE", "C4", "PL", "FURB"]
+
+ignore = [
+    # FastAPI expresses dependencies as call expressions in default arguments —
+    # Depends(...), File(...), Query(...). It is the documented idiom of the
+    # framework, not the mutable-default hazard this rule targets.
+    "B008",
+    # Long explanatory comments are deliberate in this codebase; wrapping them
+    # to satisfy a column limit would fragment the reasoning they carry.
+    "E501",
+    # Magic values in comparisons are frequently HTTP status codes and severity
+    # thresholds, where the literal is clearer than a named constant.
+    "PLR2004",
+    # Argument-count limits do not suit FastAPI endpoint signatures, which
+    # declare their dependencies explicitly.
+    "PLR0913",
+]
+
+[lint.per-file-ignores]
+# Tests deliberately import inside functions to exercise import-time behaviour,
+# and assert on values a linter reads as unused.
+"tests/*" = ["F401", "F811", "PLR0915"]
+# Alembic templates are generated code.
+"alembic/env.py" = ["F401", "I001"]
