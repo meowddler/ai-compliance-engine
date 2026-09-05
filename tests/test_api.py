@@ -90,3 +90,77 @@ def test_traceability_is_tenant_scoped():
     """A finding from another organisation must not be traceable."""
     r = client.get("/violations/999999/traceability", headers=_auth())
     assert r.status_code == 404
+
+
+
+
+# --- Capability model and separation of duties ----------------------------
+
+def test_admin_cannot_approve_controls_or_accept_risk():
+    """Separation of duties: whoever creates controls must not also approve them.
+
+    Enforced in the capability set, not left to process documentation — an
+    administrator who could do both would make independent review impossible.
+    """
+    from backend.core.permissions import Capability, capabilities_for
+
+    admin = capabilities_for("Admin")
+    assert Capability.CONTROLS_CREATE in admin
+    assert Capability.CONTROLS_APPROVE not in admin
+    assert Capability.RISK_ACCEPT not in admin
+
+
+def test_auditor_can_approve_but_not_create_controls():
+    """The approver must not be able to author what they approve."""
+    from backend.core.permissions import Capability, capabilities_for
+
+    auditor = capabilities_for("Auditor")
+    assert Capability.CONTROLS_APPROVE in auditor
+    assert Capability.RISK_ACCEPT in auditor
+    assert Capability.CONTROLS_CREATE not in auditor
+
+
+def test_analyst_has_no_privileged_capabilities():
+    from backend.core.permissions import Capability, capabilities_for
+
+    analyst = capabilities_for("Analyst")
+    for forbidden in (Capability.CONTROLS_CREATE, Capability.CONTROLS_APPROVE,
+                      Capability.CONTROLS_DELETE, Capability.RISK_ACCEPT,
+                      Capability.AUDIT_READ, Capability.AUDIT_VERIFY,
+                      Capability.USER_MANAGE, Capability.DATA_DELETE):
+        assert forbidden not in analyst, forbidden
+    assert Capability.EVIDENCE_INGEST in analyst      # can still do its job
+
+
+def test_unknown_role_gets_no_capabilities():
+    """A typo or injected role must grant nothing, not everything."""
+    from backend.core.permissions import capabilities_for
+    assert capabilities_for("SuperAdmin") == set()
+    assert capabilities_for("") == set()
+    assert capabilities_for(None) == set()
+
+
+def test_self_approval_is_rejected():
+    from backend.core.permissions import SeparationOfDutiesError, assert_not_self_approval
+    import pytest as _pytest
+
+    with _pytest.raises(SeparationOfDutiesError):
+        assert_not_self_approval("amy", "amy", "control")
+
+    # Different people is fine.
+    assert_not_self_approval("amy", "ben", "control")
+
+
+def test_analyst_cannot_create_a_rule_over_the_api():
+    """The capability model must be enforced server-side, not just in the UI."""
+    r = client.post("/auth/login", data={"username": "analyst1", "password": "analyst123"})
+    if r.status_code != 200:
+        return
+    token = r.json()["access_token"]
+    resp = client.post("/rules", headers={"Authorization": f"Bearer {token}"}, json={
+        "name": "analyst_should_not_create",
+        "description": "test", "framework": "TEST", "severity": "LOW",
+        "remediation": "n/a",
+        "condition": [{"field": "port", "operator": "==", "value": 22}],
+    })
+    assert resp.status_code == 403
