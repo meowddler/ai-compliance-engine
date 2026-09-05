@@ -1,4 +1,4 @@
-from fastapi import FastAPI, UploadFile, File, Depends, HTTPException
+from fastapi import FastAPI, UploadFile, File, Depends, HTTPException, Request
 from fastapi.security import OAuth2PasswordRequestForm
 from sqlalchemy.orm import Session
 import pandas as pd
@@ -17,7 +17,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from backend.utils.report_generator import generate_compliance_report
 from backend.utils.audit import log_action
-from backend.config import CORS_ORIGINS, EVIDENCE_FRESHNESS_DAYS
+from backend.config import CORS_ORIGINS, EVIDENCE_FRESHNESS_DAYS, ACCESS_TOKEN_EXPIRE_MINUTES
 from fastapi.staticfiles import StaticFiles
 from datetime import datetime, timezone
 from backend.ai.service import explain_finding
@@ -69,42 +69,34 @@ def read_root():
 
 
 @app.post("/auth/login", tags=["Auth"])
-def login(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_db)):
+def login(request: Request, form_data: OAuth2PasswordRequestForm = Depends(),
+          db: Session = Depends(get_db)):
     user = db.query(User).filter(User.username == form_data.username).first()
     if not user or not verify_password(form_data.password, user.hashed_password):
-        # 401, not a 200 with an error field. A failed login is not a success,
-        # and the same generic message for both cases avoids revealing whether
-        # a username exists (prevents user enumeration).
+        # 401, not a 200 with an error field, and the same message for both
+        # cases so an attacker cannot learn which usernames exist.
         raise HTTPException(status_code=401, detail="Invalid username or password")
 
-    token = create_access_token({"sub": user.username, "role": user.role, "org": user.organization_id})
-    return {"access_token": token, "token_type": "bearer", "role": user.role}
+    if user.is_active is False:
+        raise HTTPException(status_code=403, detail="Account is disabled")
 
-def build_anomaly_map(df):
-    """Map server_id -> anomaly info, tolerant of duplicate server_ids.
+    from backend.core.tokens import issue_refresh_token
 
-    A CSV can legitimately contain several rows for the same server. Using
-    set_index().to_dict("index") crashes when server_id repeats
-    (ValueError: index must be unique), and keeping only one row would silently
-    discard data. Instead we keep the most anomalous row per server — lowest
-    anomaly_score is most anomalous for IsolationForest — so a server flagged
-    anomalous in ANY row is treated as anomalous rather than being let off by a
-    later clean-looking duplicate.
-    """
-    if "server_id" not in df.columns:
-        return {}
+    token = create_access_token({"sub": user.username, "role": user.role,
+                                 "org": user.organization_id})
+    raw_refresh, _ = issue_refresh_token(
+        db, user,
+        user_agent=request.headers.get("user-agent"),
+        ip_address=request.client.host if request.client else None,
+    )
+    log_action(db, user.username, "login_success", "Successful login",
+               organization_id=user.organization_id,
+               entity_type="User", entity_id=user.id)
+    db.commit()
 
-    anomaly_map = {}
-    for _, r in df.iterrows():
-        sid = r["server_id"]
-        score = r.get("anomaly_score")
-        prev = anomaly_map.get(sid)
-        if prev is None or (score is not None and score < prev["anomaly_score"]):
-            anomaly_map[sid] = {
-                "is_anomaly": bool(r.get("is_anomaly", False)),
-                "anomaly_score": score if score is not None else 0.0,
-            }
-    return anomaly_map
+    return {"access_token": token, "token_type": "bearer", "role": user.role,
+            "refresh_token": raw_refresh,
+            "expires_in_minutes": ACCESS_TOKEN_EXPIRE_MINUTES}
 
 
 @app.post("/upload-logs", tags=["Scans"])
@@ -1135,6 +1127,81 @@ def finding_traceability(violation_id: int, db: Session = Depends(get_db),
         "reproducible": bool(evidence and rule),
     }
 
+class RefreshRequest(BaseModel):
+    refresh_token: str
+
+
+@app.post("/auth/refresh", tags=["Auth"])
+def refresh_access_token(req: RefreshRequest, request: Request,
+                         db: Session = Depends(get_db)):
+    """Exchange a refresh token for a new access token, rotating the refresh token."""
+    from backend.core.tokens import consume_refresh_token, issue_refresh_token
+
+    result = consume_refresh_token(db, req.refresh_token)
+
+    if not result.ok:
+        if result.replay:
+            # Reuse of a rotated token means it was stolen or replayed. The
+            # family is already revoked; record it as a security event.
+            log_action(db, "system", "refresh_token_replay_detected",
+                       "A revoked refresh token was presented; token family revoked.",
+                       organization_id=result.record.organization_id if result.record else None,
+                       entity_type="RefreshToken",
+                       entity_id=result.record.id if result.record else None,
+                       reason="Possible token theft.")
+        db.commit()
+        raise HTTPException(status_code=401, detail=result.error)
+
+    user = result.user
+    new_access = create_access_token({"sub": user.username, "role": user.role,
+                                      "org": user.organization_id})
+    raw_refresh, _ = issue_refresh_token(
+        db, user, family_id=result.record.family_id,
+        user_agent=request.headers.get("user-agent"),
+        ip_address=request.client.host if request.client else None,
+    )
+    db.commit()
+
+    return {"access_token": new_access, "token_type": "bearer",
+            "refresh_token": raw_refresh,
+            "expires_in_minutes": ACCESS_TOKEN_EXPIRE_MINUTES}
+
+
+@app.get("/auth/sessions", tags=["Auth"])
+def list_sessions(db: Session = Depends(get_db),
+                  current_user: User = Depends(get_current_user)):
+    """Active sessions for the current user."""
+    from backend.core.tokens import active_sessions
+
+    return [
+        {"id": s.id,
+         "issued_at": s.issued_at.isoformat() if s.issued_at else None,
+         "expires_at": s.expires_at.isoformat() if s.expires_at else None,
+         "last_used_at": s.last_used_at.isoformat() if s.last_used_at else None,
+         "user_agent": s.user_agent,
+         "ip_address": s.ip_address}
+        for s in active_sessions(db, current_user)
+    ]
+
+
+@app.post("/auth/logout", tags=["Auth"])
+def logout_all_sessions(db: Session = Depends(get_db),
+                        current_user: User = Depends(get_current_user)):
+    """Revoke every refresh token for the current user.
+
+    Access tokens already issued remain valid until they expire — they are
+    stateless by design. Keeping their lifetime short is what bounds that
+    window.
+    """
+    from backend.core.tokens import revoke_all_for_user
+
+    revoked = revoke_all_for_user(db, current_user, "User logged out of all sessions.")
+    log_action(db, current_user.username, "sessions_revoked",
+               f"Revoked {revoked} active session(s)",
+               organization_id=current_user.organization_id,
+               entity_type="User", entity_id=current_user.id)
+    db.commit()
+    return {"revoked_sessions": revoked}
 
 # Serve the frontend. Must be last — it catches all routes not claimed above.
 app.mount("/", StaticFiles(directory="frontend", html=True), name="frontend")

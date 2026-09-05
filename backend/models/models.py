@@ -339,3 +339,39 @@ class PostureSnapshot(Base):
     controls_unverified = Column(Integer, default=0)
     rubric_version = Column(String)
     created_at = Column(DateTime(timezone=True), default=utcnow, index=True)
+
+
+class RefreshToken(Base):
+    """A refresh token, stored as a hash.
+
+    The raw token is returned to the client once and never persisted: a
+    database read must not yield a usable credential. Verification hashes the
+    presented value and compares.
+
+    Rotation on use is deliberate. If a token is replayed after rotation, that
+    is evidence of theft — the whole family is revoked rather than the single
+    token, because an attacker and the legitimate user now both hold tokens
+    descended from the same original.
+    """
+    __tablename__ = "refresh_tokens"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    organization_id = Column(Integer, ForeignKey("organizations.id"), index=True, nullable=True)
+
+    token_hash = Column(String, unique=True, index=True, nullable=False)
+    family_id = Column(String, index=True)      # shared across rotations
+
+    issued_at = Column(DateTime(timezone=True), default=utcnow)
+    expires_at = Column(DateTime(timezone=True), index=True)
+    revoked_at = Column(DateTime(timezone=True), nullable=True)
+    revoked_reason = Column(String, nullable=True)
+    replaced_by_hash = Column(String, nullable=True)
+
+    user_agent = Column(String, nullable=True)
+    ip_address = Column(String, nullable=True)
+    last_used_at = Column(DateTime(timezone=True), nullable=True)
+
+    __table_args__ = (
+        Index("ix_refresh_user_active", "user_id", "revoked_at"),
+    )
