@@ -164,3 +164,118 @@ def test_analyst_cannot_create_a_rule_over_the_api():
         "condition": [{"field": "port", "operator": "==", "value": 22}],
     })
     assert resp.status_code == 403
+
+
+
+
+# --- Token lifecycle security --------------------------------------------
+
+def test_refresh_token_rotates_on_use():
+    """A used refresh token must not remain valid — otherwise a stolen copy
+    works forever."""
+    r = client.post("/auth/login", data={"username": "admin", "password": "admin123"})
+    assert r.status_code == 200
+    first = r.json()["refresh_token"]
+
+    r2 = client.post("/auth/refresh", json={"refresh_token": first})
+    assert r2.status_code == 200
+    second = r2.json()["refresh_token"]
+    assert second != first
+
+    # The old one is now dead.
+    r3 = client.post("/auth/refresh", json={"refresh_token": first})
+    assert r3.status_code == 401
+
+
+def test_refresh_token_replay_revokes_the_whole_family():
+    """Replaying a rotated token means it was stolen. Revoking only that token
+    would leave the thief's newer one working, so the family goes."""
+    r = client.post("/auth/login", data={"username": "admin", "password": "admin123"})
+    original = r.json()["refresh_token"]
+
+    rotated = client.post("/auth/refresh", json={"refresh_token": original}).json()["refresh_token"]
+
+    # Replay the original: detected as theft.
+    assert client.post("/auth/refresh", json={"refresh_token": original}).status_code == 401
+
+    # The descendant is revoked too, not just the replayed token.
+    assert client.post("/auth/refresh", json={"refresh_token": rotated}).status_code == 401
+
+
+def test_malformed_and_forged_tokens_are_rejected():
+    for bad in ("", "garbage", "a.b.c", "Bearer nonsense"):
+        r = client.get("/violations", headers={"Authorization": f"Bearer {bad}"})
+        assert r.status_code == 401, bad
+
+
+def test_token_signed_with_wrong_key_is_rejected():
+    """Signature verification must actually verify."""
+    from jose import jwt
+    from datetime import datetime, timedelta, timezone
+
+    forged = jwt.encode(
+        {"sub": "admin", "role": "Admin", "org": 1,
+         "exp": datetime.now(timezone.utc) + timedelta(hours=1)},
+        "not-the-real-signing-key-not-the-real-signing-key",
+        algorithm="HS256",
+    )
+    assert client.get("/violations", headers={"Authorization": f"Bearer {forged}"}).status_code == 401
+
+
+def test_alg_none_token_is_rejected():
+    """The classic algorithm-confusion attack: an unsigned token claiming to be
+    valid. Accepting it would make every signature meaningless."""
+    import base64, json as _json
+
+    def b64(d):
+        return base64.urlsafe_b64encode(_json.dumps(d).encode()).rstrip(b"=").decode()
+
+    unsigned = f'{b64({"alg": "none", "typ": "JWT"})}.{b64({"sub": "admin", "role": "Admin"})}.'
+    assert client.get("/violations", headers={"Authorization": f"Bearer {unsigned}"}).status_code == 401
+
+
+def test_expired_token_is_rejected():
+    from jose import jwt
+    from datetime import datetime, timedelta, timezone
+    from backend.config import SECRET_KEY, ALGORITHM
+
+    expired = jwt.encode(
+        {"sub": "admin", "role": "Admin", "org": 1,
+         "exp": datetime.now(timezone.utc) - timedelta(hours=1)},
+        SECRET_KEY, algorithm=ALGORITHM,
+    )
+    assert client.get("/violations", headers={"Authorization": f"Bearer {expired}"}).status_code == 401
+
+
+def test_token_role_claim_cannot_escalate_privileges():
+    """Authorisation reads the role from the DATABASE. A token claiming a role
+    the account does not have must grant nothing."""
+    from jose import jwt
+    from datetime import datetime, timedelta, timezone
+    from backend.config import SECRET_KEY, ALGORITHM
+
+    r = client.post("/auth/login", data={"username": "analyst1", "password": "analyst123"})
+    if r.status_code != 200:
+        return
+
+    # Correctly signed, but claims Admin for an Analyst account.
+    escalated = jwt.encode(
+        {"sub": "analyst1", "role": "Admin", "org": 1,
+         "exp": datetime.now(timezone.utc) + timedelta(hours=1)},
+        SECRET_KEY, algorithm=ALGORITHM,
+    )
+    resp = client.post("/rules", headers={"Authorization": f"Bearer {escalated}"}, json={
+        "name": "escalation_attempt", "description": "d", "framework": "TEST",
+        "severity": "LOW", "remediation": "n/a",
+        "condition": [{"field": "port", "operator": "==", "value": 22}],
+    })
+    assert resp.status_code == 403
+
+
+def test_logout_revokes_all_refresh_tokens():
+    r = client.post("/auth/login", data={"username": "admin", "password": "admin123"})
+    refresh = r.json()["refresh_token"]
+    headers = {"Authorization": f"Bearer {r.json()['access_token']}"}
+
+    assert client.post("/auth/logout", headers=headers).status_code == 200
+    assert client.post("/auth/refresh", json={"refresh_token": refresh}).status_code == 401
