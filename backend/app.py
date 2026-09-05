@@ -24,6 +24,7 @@ from backend.ai.service import explain_finding
 from backend.models.models import AIInteraction
 from pydantic import BaseModel
 from backend.models.models import PostureSnapshot
+from backend.core.permissions import Capability, require_capability, has_capability
 
 TAGS_METADATA = [
     {"name": "Auth", "description": "Login and token issue."},
@@ -528,7 +529,7 @@ def verify_evidence(evidence_id: int, db: Session = Depends(get_db), current_use
 
 
 @app.post("/rules", tags=["Rules"])
-def create_rule(rule: RuleCreate, db: Session = Depends(get_db), current_user: User = Depends(require_role(["Admin"]))):
+def create_rule(rule: RuleCreate, db: Session = Depends(get_db), current_user: User = Depends(require_capability(Capability.CONTROLS_CREATE))):
     db_rule = Rule(
         name=rule.name,
         organization_id=current_user.organization_id,
@@ -740,16 +741,47 @@ def get_audit_log(db: Session = Depends(get_db), current_user: User = Depends(re
 
 
 @app.delete("/rules/{rule_id}", tags=["Rules"])
-def delete_rule(rule_id: int, db: Session = Depends(get_db), current_user: User = Depends(require_role(["Admin"]))):
+def delete_rule(rule_id: int, db: Session = Depends(get_db),
+                current_user: User = Depends(require_capability(Capability.CONTROLS_DELETE))):
+    """Retire a control, or delete it if it has never produced a finding.
+
+    A control that has produced findings is NOT removed. Deleting it would
+    orphan every finding that cites it and destroy the traceability the audit
+    trail depends on — you could no longer show which control version produced
+    a historical result. Such controls are retired instead: deactivated and
+    marked non-current, so they stop evaluating but remain citable.
+    """
+    from backend.utils.audit import snapshot_rule
+
     db_rule = db.query(Rule).filter(
         Rule.id == rule_id,
         Rule.organization_id == current_user.organization_id,
     ).first()
     if not db_rule:
         raise HTTPException(status_code=404, detail="Rule not found")
-    from backend.utils.audit import snapshot_rule
+
     rule_name = db_rule.name
-    before_snapshot = snapshot_rule(db_rule)   # the only remaining record of it
+    before_snapshot = snapshot_rule(db_rule)
+
+    referencing = db.query(Violation).filter(Violation.rule_id == rule_id).count()
+
+    if referencing:
+        db_rule.active = False
+        db_rule.is_current = False
+        db.commit()
+        log_action(db, current_user.username, "rule_retired",
+                   f"Retired rule '{rule_name}' ({referencing} finding(s) reference it)",
+                   organization_id=current_user.organization_id,
+                   entity_type="Rule", entity_id=rule_id,
+                   before=before_snapshot, after=snapshot_rule(db_rule),
+                   reason="Referenced by existing findings; retained for traceability.")
+        db.commit()
+        return {
+            "message": f"Rule retired rather than deleted: {referencing} finding(s) reference it.",
+            "action": "retired",
+            "referencing_findings": referencing,
+        }
+
     db.delete(db_rule)
     db.commit()
     log_action(db, current_user.username, "rule_deleted",
@@ -758,7 +790,7 @@ def delete_rule(rule_id: int, db: Session = Depends(get_db), current_user: User 
                entity_type="Rule", entity_id=rule_id,
                before=before_snapshot)
     db.commit()
-    return {"message": "Rule deleted"}
+    return {"message": "Rule deleted", "action": "deleted"}
 
 @app.delete("/scans/reset", tags=["Scans"])
 def reset_scans(db: Session = Depends(get_db), current_user: User = Depends(require_role(["Admin"]))):
@@ -916,8 +948,7 @@ def posture_changes(db: Session = Depends(get_db), current_user: User = Depends(
     }
 
 @app.get("/audit/verify", tags=["Audit"])
-def verify_audit_chain(db: Session = Depends(get_db),
-                       current_user: User = Depends(require_role(["Admin", "Auditor"]))):
+def verify_audit_chain(db: Session = Depends(get_db), current_user: User = Depends(require_capability(Capability.AUDIT_VERIFY))):
     """Verify the integrity of this organisation's audit chain.
 
     Reports the first break and where it occurred. A broken chain is a finding
