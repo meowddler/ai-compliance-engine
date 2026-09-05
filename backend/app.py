@@ -990,5 +990,120 @@ def create_audit_checkpoint(db: Session = Depends(get_db),
                         "chain will not reproduce it."),
     }
 
+
+@app.get("/violations/{violation_id}/traceability", tags=["Audit"])
+def finding_traceability(violation_id: int, db: Session = Depends(get_db),
+                         current_user: User = Depends(get_current_user)):
+    """Answer the eleven auditability questions for one finding.
+
+    Each answer carries the data it was derived from, so a reviewer can check
+    the reasoning rather than trust the summary.
+    """
+    from backend.models.models import AuditLog, FindingHistory
+
+    v = db.query(Violation).filter(
+        Violation.id == violation_id,
+        Violation.organization_id == current_user.organization_id
+    ).first()
+    if not v:
+        raise HTTPException(status_code=404, detail="Finding not found")
+
+    rule = db.query(Rule).filter(Rule.id == v.rule_id).first() if v.rule_id else None
+    evidence = db.query(Evidence).filter(Evidence.id == v.evidence_id).first() if v.evidence_id else None
+    scan = db.query(Scan).filter(Scan.id == v.scan_id).first() if v.scan_id else None
+
+    clause = None
+    if rule and rule.framework_clause_id:
+        clause = db.query(Framework).filter(Framework.id == rule.framework_clause_id).first()
+
+    history = (db.query(FindingHistory)
+                 .filter(FindingHistory.violation_id == v.id)
+                 .order_by(FindingHistory.changed_at.asc()).all())
+
+    audit_events = (db.query(AuditLog)
+                      .filter(AuditLog.organization_id == current_user.organization_id,
+                              AuditLog.entity_type == "Finding",
+                              AuditLog.entity_id == str(v.id))
+                      .order_by(AuditLog.timestamp.asc()).all())
+
+    def answered(value):
+        return {"answered": value is not None and value != "", "value": value}
+
+    return {
+        "finding_id": v.id,
+        "questions": {
+            "1_what_requirement_caused_this": answered(
+                f"{clause.name}:{clause.version} {clause.clause_id} — {clause.title}"
+                if clause else (rule.framework if rule else None)
+            ),
+            "2_which_control_version_was_evaluated": answered(
+                {"rule_id": rule.id, "name": rule.name, "version": rule.version,
+                 "condition": rule.condition, "is_current": rule.is_current}
+                if rule else None
+            ),
+            "3_what_evidence_was_used": answered(
+                {"evidence_id": evidence.id, "filename": evidence.filename,
+                 "sha256": evidence.sha256, "size_bytes": evidence.size_bytes}
+                if evidence else None
+            ),
+            "4_when_was_evidence_collected": answered(
+                evidence.collected_at.isoformat() if evidence and evidence.collected_at else None
+            ),
+            "5_which_evaluator_and_version": answered(
+                {"evaluator": "deterministic_rule_engine",
+                 "control_version": rule.version if rule else None,
+                 "anomaly_detector": v.anomaly_score is not None}
+            ),
+            "6_what_reasoning_produced_the_result": answered(v.message),
+            "7_what_confidence_exists": answered(
+                {"basis": "deterministic",
+                 "note": ("Status assigned by rule evaluation, not estimation. "
+                          "Anomaly score is advisory and does not affect status."),
+                 "anomaly_score": v.anomaly_score,
+                 "is_anomaly": v.is_anomaly}
+            ),
+            "8_why_was_this_status_assigned": answered(
+                {"status": v.status, "reason": v.message}
+            ),
+            "9_who_changed_the_result_and_when": answered([
+                {"from": h.from_state, "to": h.to_state, "by": h.changed_by,
+                 "at": h.changed_at.isoformat() if h.changed_at else None,
+                 "note": h.note}
+                for h in history
+            ] or None),
+            "10_which_framework_version_applied": answered(
+                {"framework": clause.name, "version": clause.version,
+                 "clause": clause.clause_id} if clause
+                else ({"framework": rule.framework, "version": None,
+                       "clause": None} if rule else None)
+            ),
+            "11_is_the_audit_trail_tamper_evident": answered(
+                {"hash_chained": True,
+                 "verify_endpoint": "/audit/verify",
+                 "related_audit_events": len(audit_events)}
+            ),
+        },
+        "chain": {
+            "finding": {"id": v.id, "server_id": v.server_id, "status": v.status,
+                        "severity": v.severity, "lifecycle": v.lifecycle,
+                        "detected_at": v.created_at.isoformat() if v.created_at else None},
+            "scan": {"id": scan.id, "filename": scan.filename,
+                     "at": scan.created_at.isoformat() if scan and scan.created_at else None} if scan else None,
+            "evidence": {"id": evidence.id, "sha256": evidence.sha256,
+                         "uploaded_by": evidence.uploaded_by} if evidence else None,
+            "control": {"id": rule.id, "name": rule.name, "version": rule.version} if rule else None,
+            "clause": {"framework": clause.name, "version": clause.version,
+                       "clause_id": clause.clause_id, "title": clause.title} if clause else None,
+        },
+        "audit_events": [
+            {"action": a.action, "by": a.username,
+             "at": a.timestamp.isoformat() if a.timestamp else None,
+             "sequence": a.sequence}
+            for a in audit_events
+        ],
+        "reproducible": bool(evidence and rule),
+    }
+
+
 # Serve the frontend. Must be last — it catches all routes not claimed above.
 app.mount("/", StaticFiles(directory="frontend", html=True), name="frontend")
