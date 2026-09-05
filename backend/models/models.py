@@ -190,19 +190,65 @@ class User(Base):
 
 
 class AuditLog(Base):
-    """Append-only record of state-changing actions.
+    """Append-only, hash-chained record of state-changing actions.
 
-    organization_id is required for isolation: without it every tenant's
-    auditor could read every other tenant's activity, usernames included.
+    Each entry hashes its own content together with the previous entry's hash,
+    so modifying, deleting, or reordering any entry breaks every hash after it.
+
+    LIMITATION, stated plainly: an attacker with unrestricted write access to
+    this table can recompute the whole chain and leave it internally
+    consistent. Hash chaining detects ad-hoc tampering, not a full rewrite by a
+    database administrator. Periodic checkpoints (see AuditCheckpoint) narrow
+    that window by anchoring the head hash outside the chain itself.
     """
     __tablename__ = "audit_logs"
 
     id = Column(Integer, primary_key=True, index=True)
     organization_id = Column(Integer, ForeignKey("organizations.id"), index=True, nullable=True)
-    username = Column(String)
+
+    # Position in this organisation's chain. Gaps are themselves evidence.
+    sequence = Column(Integer, index=True, nullable=True)
+
+    username = Column(String)                   # actor
     action = Column(String, index=True)
-    details = Column(Text)
+    entity_type = Column(String, nullable=True, index=True)
+    entity_id = Column(String, nullable=True, index=True)
+
+    before_state = Column(Text, nullable=True)  # JSON, secrets redacted
+    after_state = Column(Text, nullable=True)
+    reason = Column(Text, nullable=True)
+    correlation_id = Column(String, nullable=True, index=True)
+
+    details = Column(Text)                      # human-readable summary
+
+    previous_hash = Column(String, nullable=True)
+    entry_hash = Column(String, nullable=True, index=True)
+    canonical_version = Column(String, nullable=True)
+
     timestamp = Column(DateTime(timezone=True), default=utcnow, index=True)
+
+    __table_args__ = (
+        Index("ix_audit_org_sequence", "organization_id", "sequence"),
+    )
+
+
+class AuditCheckpoint(Base):
+    """A periodically recorded head hash.
+
+    Anchors the chain at a point in time. If a checkpoint is also recorded
+    somewhere outside this database — printed, emailed, written to an external
+    log — then a full in-database rewrite becomes detectable, because the
+    recomputed chain will not reproduce the checkpointed hash.
+    """
+    __tablename__ = "audit_checkpoints"
+
+    id = Column(Integer, primary_key=True, index=True)
+    organization_id = Column(Integer, ForeignKey("organizations.id"), index=True, nullable=True)
+    sequence = Column(Integer)                  # head sequence at checkpoint time
+    head_hash = Column(String)
+    entries_covered = Column(Integer)
+    created_by = Column(String)
+    created_at = Column(DateTime(timezone=True), default=utcnow, index=True)
 
 
 class AIInteraction(Base):

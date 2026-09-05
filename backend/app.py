@@ -891,5 +891,80 @@ def posture_changes(db: Session = Depends(get_db), current_user: User = Depends(
         },
     }
 
+@app.get("/audit/verify", tags=["Audit"])
+def verify_audit_chain(db: Session = Depends(get_db),
+                       current_user: User = Depends(require_role(["Admin", "Auditor"]))):
+    """Verify the integrity of this organisation's audit chain.
+
+    Reports the first break and where it occurred. A broken chain is a finding
+    to surface, not an error — so this returns 200 with valid=false rather than
+    raising.
+    """
+    from backend.utils.audit import chained_entries, chain_stats
+    from backend.utils.audit_chain import verify_chain
+
+    org_id = current_user.organization_id
+    result = verify_chain(chained_entries(db, org_id))
+    stats = chain_stats(db, org_id)
+
+    return {
+        **result,
+        **stats,
+        "verified_at": datetime.now(timezone.utc).isoformat(),
+        "verified_by": current_user.username,
+        "note": (
+            "Hash chaining detects modified, deleted, reordered, or inserted "
+            "entries. It cannot detect a full rewrite by an actor with "
+            "unrestricted database write access; checkpoints anchored outside "
+            "this database are required for that."
+        ),
+    }
+
+
+@app.post("/audit/checkpoint", tags=["Audit"])
+def create_audit_checkpoint(db: Session = Depends(get_db),
+                            current_user: User = Depends(require_role(["Admin", "Auditor"]))):
+    """Record the current head hash as a checkpoint.
+
+    Recording this value somewhere outside the database — an external log, a
+    printed report — is what makes a wholesale rewrite detectable.
+    """
+    from backend.models.models import AuditCheckpoint
+    from backend.utils.audit import chained_entries
+    from backend.utils.audit_chain import verify_chain
+
+    org_id = current_user.organization_id
+    entries = chained_entries(db, org_id)
+    result = verify_chain(entries)
+
+    if not result["valid"]:
+        # Checkpointing a broken chain would certify tampering as legitimate.
+        raise HTTPException(
+            status_code=409,
+            detail=f"Refusing to checkpoint: chain is invalid ({result['reason']} "
+                   f"at sequence {result.get('sequence')}). Investigate before checkpointing."
+        )
+
+    checkpoint = AuditCheckpoint(
+        organization_id=org_id,
+        sequence=entries[-1].sequence if entries else 0,
+        head_hash=result["head_hash"],
+        entries_covered=result["entries_verified"],
+        created_by=current_user.username,
+    )
+    db.add(checkpoint)
+    db.commit()
+    db.refresh(checkpoint)
+
+    return {
+        "checkpoint_id": checkpoint.id,
+        "sequence": checkpoint.sequence,
+        "head_hash": checkpoint.head_hash,
+        "entries_covered": checkpoint.entries_covered,
+        "created_at": checkpoint.created_at.isoformat(),
+        "instruction": ("Record this head_hash outside the system. A rewrite of the "
+                        "chain will not reproduce it."),
+    }
+
 # Serve the frontend. Must be last — it catches all routes not claimed above.
 app.mount("/", StaticFiles(directory="frontend", html=True), name="frontend")
