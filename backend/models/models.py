@@ -379,3 +379,51 @@ class RefreshToken(Base):
     __table_args__ = (
         Index("ix_refresh_user_active", "user_id", "revoked_at"),
     )
+
+class RetentionPolicy(Base):
+    """How long a class of data is kept before becoming eligible for deletion.
+
+    Retention is a domain concept, not a cron job: an auditor asks what the
+    policy IS, who set it, and when it changed — so it is stored, versioned by
+    audit trail, and enforced rather than implied by a script.
+    """
+    __tablename__ = "retention_policies"
+
+    id = Column(Integer, primary_key=True, index=True)
+    organization_id = Column(Integer, ForeignKey("organizations.id"), index=True, nullable=True)
+
+    data_class = Column(String, index=True)     # e.g. "evidence", "audit_log"
+    retention_days = Column(Integer)
+    # Some classes must never be deleted by ordinary retention — audit history
+    # in particular. Marked explicitly rather than relying on policy discipline.
+    deletion_permitted = Column(Boolean, default=True, nullable=False)
+    description = Column(Text, nullable=True)
+
+    created_by = Column(String)
+    created_at = Column(DateTime(timezone=True), default=utcnow)
+    updated_at = Column(DateTime(timezone=True), nullable=True)
+
+
+class LegalHold(Base):
+    """A hold preventing deletion of records regardless of retention policy.
+
+    Legal hold overrides retention, never the reverse. A record under hold
+    survives its retention window because a legal obligation outranks a
+    housekeeping rule.
+    """
+    __tablename__ = "legal_holds"
+
+    id = Column(Integer, primary_key=True, index=True)
+    organization_id = Column(Integer, ForeignKey("organizations.id"), index=True, nullable=True)
+
+    name = Column(String)
+    reason = Column(Text)
+    data_class = Column(String, index=True, nullable=True)   # null = all classes
+    entity_type = Column(String, nullable=True)
+    entity_id = Column(String, nullable=True)
+
+    active = Column(Boolean, default=True, nullable=False, index=True)
+    placed_by = Column(String)
+    placed_at = Column(DateTime(timezone=True), default=utcnow)
+    released_by = Column(String, nullable=True)
+    released_at = Column(DateTime(timezone=True), nullable=True)

@@ -1207,9 +1207,6 @@ def logout_all_sessions(db: Session = Depends(get_db),
     db.commit()
     return {"revoked_sessions": revoked}
 
-# Serve the frontend. Must be last — it catches all routes not claimed above.
-app.mount("/", StaticFiles(directory="frontend", html=True), name="frontend")
-
 @app.get("/security/encryption-status", tags=["Audit"])
 def get_encryption_status(current_user: User = Depends(require_capability(Capability.AUDIT_READ))):
     """Report the real encryption configuration.
@@ -1219,3 +1216,89 @@ def get_encryption_status(current_user: User = Depends(require_capability(Capabi
     """
     from backend.utils.encryption import encryption_status
     return encryption_status()
+
+
+class LegalHoldRequest(BaseModel):
+    name: str
+    reason: str
+    data_class: str | None = None
+
+
+@app.get("/governance/retention", tags=["Audit"])
+def get_retention_status(db: Session = Depends(get_db),
+                         current_user: User = Depends(require_capability(Capability.AUDIT_READ))):
+    """What retention would delete, and what is protected from it."""
+    from backend.utils.governance import evaluate_retention
+    return evaluate_retention(db, current_user.organization_id)
+
+
+@app.post("/governance/retention/seed-defaults", tags=["Audit"])
+def seed_retention_defaults(db: Session = Depends(get_db),
+                            current_user: User = Depends(require_capability(Capability.ORGANIZATION_MANAGE))):
+    from backend.utils.governance import seed_default_policies
+    created = seed_default_policies(db, current_user.organization_id, current_user.username)
+    db.commit()
+    log_action(db, current_user.username, "retention_policies_seeded",
+               f"Created default retention policies: {', '.join(created) or 'none (already present)'}",
+               organization_id=current_user.organization_id,
+               entity_type="RetentionPolicy")
+    db.commit()
+    return {"created": created}
+
+
+@app.post("/governance/legal-hold", tags=["Audit"])
+def place_legal_hold(req: LegalHoldRequest, db: Session = Depends(get_db),
+                     current_user: User = Depends(require_capability(Capability.AUDIT_READ))):
+    """Place a hold. While active it overrides retention for the covered class."""
+    from backend.models.models import LegalHold
+
+    hold = LegalHold(
+        organization_id=current_user.organization_id,
+        name=req.name, reason=req.reason, data_class=req.data_class,
+        active=True, placed_by=current_user.username,
+    )
+    db.add(hold)
+    db.commit()
+    db.refresh(hold)
+
+    log_action(db, current_user.username, "legal_hold_placed",
+               f"Placed legal hold '{hold.name}' on {hold.data_class or 'all data classes'}",
+               organization_id=current_user.organization_id,
+               entity_type="LegalHold", entity_id=hold.id, reason=req.reason)
+    db.commit()
+
+    return {"id": hold.id, "name": hold.name, "data_class": hold.data_class,
+            "active": True, "placed_by": hold.placed_by}
+
+
+@app.delete("/governance/legal-hold/{hold_id}", tags=["Audit"])
+def release_legal_hold(hold_id: int, db: Session = Depends(get_db),
+                       current_user: User = Depends(require_capability(Capability.AUDIT_READ))):
+    """Release a hold. The record is retained, marked released — never deleted,
+    since the existence of a past hold is itself auditable."""
+    from backend.models.models import LegalHold
+
+    hold = db.query(LegalHold).filter(
+        LegalHold.id == hold_id,
+        LegalHold.organization_id == current_user.organization_id).first()
+    if not hold:
+        raise HTTPException(status_code=404, detail="Legal hold not found")
+    if not hold.active:
+        raise HTTPException(status_code=409, detail="Legal hold is already released")
+
+    hold.active = False
+    hold.released_by = current_user.username
+    hold.released_at = datetime.now(timezone.utc)
+    db.commit()
+
+    log_action(db, current_user.username, "legal_hold_released",
+               f"Released legal hold '{hold.name}'",
+               organization_id=current_user.organization_id,
+               entity_type="LegalHold", entity_id=hold.id)
+    db.commit()
+
+    return {"id": hold.id, "active": False, "released_by": hold.released_by}
+
+# Serve the frontend. Must be last — it catches all routes not claimed above.
+app.mount("/", StaticFiles(directory="frontend", html=True), name="frontend")
+
