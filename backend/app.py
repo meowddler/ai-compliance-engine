@@ -32,6 +32,9 @@ from backend.utils.pagination import PageParams, paginate
 from backend.core.logging_config import configure_logging
 from backend.core.middleware import CorrelationMiddleware
 from backend.core.versioning import CURRENT_VERSION, version_info
+from contextlib import asynccontextmanager
+from backend.core.scheduler import scheduler
+from backend.core.tasks import degrade_stale_evidence, verify_audit_chains
 
 TAGS_METADATA = [
     {"name": "Auth", "description": "Login and token issue."},
@@ -46,7 +49,36 @@ TAGS_METADATA = [
     {"name": "System", "description": "Health and service information."},
 ]
 
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Start and stop background work with the application.
+
+    Registration happens here rather than at import time so tasks are not
+    started by anything that merely imports the module — the test suite, a
+    migration, a management command.
+    """
+    scheduler.register(
+        "degrade_stale_evidence",
+        degrade_stale_evidence,
+        # Hourly. Evidence expiry is measured in days, so checking more often
+        # buys nothing and costs a full table scan each time.
+        interval_seconds=3600,
+    )
+    scheduler.register(
+        "verify_audit_chains",
+        verify_audit_chains,
+        # Every six hours. Read-only and cheap, but continuous verification is
+        # the point: on-demand checking means tampering waits to be noticed.
+        interval_seconds=21600,
+    )
+    scheduler.start()
+    try:
+        yield
+    finally:
+        await scheduler.stop()
+
 app = FastAPI(
+    lifespan=lifespan,
     title="AI Compliance Engine",
     description=(
         "Evidence-driven compliance evaluation with deterministic controls and "
@@ -57,6 +89,7 @@ app = FastAPI(
     version=f"1.0.0-{CURRENT_VERSION}",
     openapi_tags=TAGS_METADATA,
 )
+
 
 # Structured logging first, so anything logged during startup is captured in
 # the same format as request logs.
@@ -1805,5 +1838,15 @@ def impersonation_log(db: Session = Depends(get_db),
         "active": s.ended_at is None,
     } for s in sessions]
 
+@app.get("/admin/scheduler", tags=["System"])
+def scheduler_status(current_user: User = Depends(require_capability(Capability.AUDIT_READ))):
+    """Scheduler health.
+
+    Reports failure counts and last error per task. A scheduler that fails
+    silently is worse than none — the work appears to be happening.
+    """
+    return scheduler.status()
+
 # Serve the frontend. Must be last — it catches all routes not claimed above.
 app.mount("/", StaticFiles(directory="frontend", html=True), name="frontend")
+
