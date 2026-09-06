@@ -6,6 +6,8 @@ from starlette.middleware.base import BaseHTTPMiddleware
 
 from backend.core.logging_config import correlation_id, get_logger, new_correlation_id
 
+from backend.core.metrics import record_request
+
 logger = get_logger("request")
 
 # Endpoints whose bodies contain credentials. Their paths are logged; nothing
@@ -48,3 +50,9 @@ class CorrelationMiddleware(BaseHTTPMiddleware):
                 },
             )
             correlation_id.reset(token)
+            # The route template rather than the concrete path, so
+            # /violations/1 and /violations/2 aggregate instead of producing
+            # one metric series per id.
+            route = request.scope.get("route")
+            template = getattr(route, "path", request.url.path)
+            record_request(request.method, template, status, duration_ms)

@@ -1519,6 +1519,21 @@ def mfa_status(current_user: User = Depends(get_current_user)):
                        "A lockout recovery channel is required first."),
     }
 
+@app.get("/metrics", tags=["System"])
+def get_metrics(db: Session = Depends(get_db),
+                current_user: User = Depends(require_capability(Capability.AUDIT_READ))):
+    """Operational and business metrics.
+
+    Authenticated and tenant-scoped: request volumes and finding counts describe
+    a customer's operations and are not public.
+    """
+    from backend.core.metrics import business_metrics, request_metrics
+
+    return {
+        "requests": request_metrics(),
+        "business": business_metrics(db, current_user.organization_id),
+    }
+
+
 # Serve the frontend. Must be last — it catches all routes not claimed above.
 app.mount("/", StaticFiles(directory="frontend", html=True), name="frontend")
-
