@@ -399,8 +399,13 @@ def explain_violation(request: Request, violation_id: int, db: Session = Depends
     if not v:
         raise HTTPException(status_code=404, detail="Finding not found")
 
-    rule = db.query(Rule).filter(Rule.id == v.rule_id).first() if v.rule_id else None
-    evidence = db.query(Evidence).filter(Evidence.id == v.evidence_id).first() if v.evidence_id else None
+    # Explicitly org-scoped. The parent finding is already filtered, so these
+    # lookups are safe by referential integrity — but relying on that makes the
+    # guarantee implicit, and four isolation defects have already come from
+    # exactly that assumption.
+    org = current_user.organization_id
+    rule = db.query(Rule).filter(Rule.id == v.rule_id, Rule.organization_id == org).first() if v.rule_id else None
+    evidence = db.query(Evidence).filter(Evidence.id == v.evidence_id, Evidence.organization_id == org).first() if v.evidence_id else None
 
     return explain_finding(db, violation=v, rule=rule, evidence=evidence, current_user=current_user)
 
@@ -737,7 +742,9 @@ def dashboard_summary(db: Session = Depends(get_db), current_user: User = Depend
         ).all()
         # Findings only record non-PASS results, so passes are inferred from
         # the number of evaluations that produced no finding.
-        records = db.query(ScanRecord).filter(ScanRecord.scan_id == latest_scan.id).count()
+        records = db.query(ScanRecord).filter(
+            ScanRecord.scan_id == latest_scan.id,
+            ScanRecord.organization_id == org_id).count()
         active_rule_count = db.query(Rule).filter(
             Rule.organization_id == org_id, Rule.active == True, Rule.is_current == True
         ).count()
@@ -847,7 +854,9 @@ def delete_rule(rule_id: int, db: Session = Depends(get_db),
     rule_name = db_rule.name
     before_snapshot = snapshot_rule(db_rule)
 
-    referencing = db.query(Violation).filter(Violation.rule_id == rule_id).count()
+    referencing = db.query(Violation).filter(
+        Violation.rule_id == rule_id,
+        Violation.organization_id == current_user.organization_id).count()
 
     if referencing:
         db_rule.active = False
@@ -1123,9 +1132,14 @@ def finding_traceability(violation_id: int, db: Session = Depends(get_db),
     if not v:
         raise HTTPException(status_code=404, detail="Finding not found")
 
-    rule = db.query(Rule).filter(Rule.id == v.rule_id).first() if v.rule_id else None
-    evidence = db.query(Evidence).filter(Evidence.id == v.evidence_id).first() if v.evidence_id else None
-    scan = db.query(Scan).filter(Scan.id == v.scan_id).first() if v.scan_id else None
+    # Explicitly org-scoped. The parent finding is already filtered, so these
+    # lookups are safe by referential integrity — but relying on that makes the
+    # guarantee implicit, and four isolation defects have already come from
+    # exactly that assumption.
+    org = current_user.organization_id
+    rule = db.query(Rule).filter(Rule.id == v.rule_id, Rule.organization_id == org).first() if v.rule_id else None
+    evidence = db.query(Evidence).filter(Evidence.id == v.evidence_id, Evidence.organization_id == org).first() if v.evidence_id else None
+    scan = db.query(Scan).filter(Scan.id == v.scan_id, Scan.organization_id == org).first() if v.scan_id else None
 
     clause = None
     if rule and rule.framework_clause_id:
