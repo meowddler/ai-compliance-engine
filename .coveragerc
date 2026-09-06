@@ -1,0 +1,23 @@
+# Coverage scope.
+#
+# Measured against BUSINESS LOGIC, which is what the readiness gate asks for.
+# Seed and init scripts are operational tooling run by hand during setup; they
+# are exercised every time the container is built from scratch, but a unit test
+# asserting that a seed script seeds would test the test, not the system.
+
+[run]
+source = backend
+omit =
+    backend/seed_*.py
+    backend/init_db.py
+    backend/__init__.py
+    */__pycache__/*
+
+[report]
+exclude_lines =
+    pragma: no cover
+    if __name__ == .__main__.:
+    raise NotImplementedError
+    if TYPE_CHECKING:
+show_missing = True
+skip_covered = True
