@@ -1330,6 +1330,144 @@ def release_legal_hold(hold_id: int, db: Session = Depends(get_db),
 
     return {"id": hold.id, "active": False, "released_by": hold.released_by}
 
+class MFAVerifyRequest(BaseModel):
+    code: str
+
+
+@app.post("/auth/mfa/enroll", tags=["Auth"])
+def enroll_mfa(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    """Begin MFA enrolment: generate a secret and return its provisioning URI.
+
+    Enrolment is NOT complete until a code is verified — otherwise a user who
+    never scanned the QR code would be locked out of their own account.
+    """
+    from backend.core.mfa import generate_secret, provisioning_uri, store_secret
+
+    if current_user.mfa_enabled:
+        raise HTTPException(status_code=409, detail="MFA is already enabled for this account.")
+
+    secret = generate_secret()
+    current_user.mfa_secret_encrypted = store_secret(secret)
+    db.commit()
+
+    log_action(db, current_user.username, "mfa_enrolment_started",
+               "Generated an MFA secret; awaiting verification",
+               organization_id=current_user.organization_id,
+               entity_type="User", entity_id=current_user.id)
+    db.commit()
+
+    return {
+        "provisioning_uri": provisioning_uri(secret, current_user.username),
+        "secret": secret,          # shown once, for manual entry
+        "next_step": "Verify a code from your authenticator to complete enrolment.",
+    }
+
+
+@app.post("/auth/mfa/verify", tags=["Auth"])
+def verify_mfa_enrolment(req: MFAVerifyRequest, db: Session = Depends(get_db),
+                         current_user: User = Depends(get_current_user)):
+    """Complete enrolment by proving possession of the secret."""
+    from backend.core.mfa import generate_recovery_codes, load_secret, verify_code
+
+    if current_user.mfa_enabled:
+        raise HTTPException(status_code=409, detail="MFA is already enabled.")
+    if not current_user.mfa_secret_encrypted:
+        raise HTTPException(status_code=400, detail="Start enrolment first.")
+
+    if not verify_code(load_secret(current_user.mfa_secret_encrypted), req.code):
+        log_action(db, current_user.username, "mfa_enrolment_failed",
+                   "Submitted code did not verify",
+                   organization_id=current_user.organization_id,
+                   entity_type="User", entity_id=current_user.id)
+        db.commit()
+        raise HTTPException(status_code=400, detail="That code is not valid.")
+
+    codes, hashed = generate_recovery_codes()
+    current_user.mfa_enabled = True
+    current_user.mfa_recovery_codes = hashed
+    current_user.mfa_enrolled_at = datetime.now(timezone.utc)
+    db.commit()
+
+    log_action(db, current_user.username, "mfa_enabled",
+               "MFA enrolment completed",
+               organization_id=current_user.organization_id,
+               entity_type="User", entity_id=current_user.id)
+    db.commit()
+
+    return {
+        "mfa_enabled": True,
+        "recovery_codes": codes,
+        "warning": ("These recovery codes are shown once and cannot be retrieved. "
+                    "Store them somewhere safe."),
+        "limitation": ("MFA is enrolled but NOT yet enforced at login. Enforcement "
+                       "requires an out-of-band recovery channel, which this "
+                       "deployment does not have."),
+    }
+
+
+@app.post("/auth/mfa/disable", tags=["Auth"])
+def disable_mfa(req: MFAVerifyRequest, db: Session = Depends(get_db),
+                current_user: User = Depends(get_current_user)):
+    """Disable MFA. Requires a valid code or recovery code.
+
+    Removing a second factor without proving possession would make it
+    decorative — anyone with a stolen session could strip it.
+    """
+    from backend.core.mfa import consume_recovery_code, load_secret, verify_code
+
+    if not current_user.mfa_enabled:
+        raise HTTPException(status_code=409, detail="MFA is not enabled.")
+
+    ok = verify_code(load_secret(current_user.mfa_secret_encrypted), req.code)
+    if not ok:
+        ok, remaining = consume_recovery_code(current_user.mfa_recovery_codes, req.code)
+        if ok:
+            current_user.mfa_recovery_codes = remaining
+
+    if not ok:
+        log_action(db, current_user.username, "mfa_disable_failed",
+                   "Invalid code supplied when attempting to disable MFA",
+                   organization_id=current_user.organization_id,
+                   entity_type="User", entity_id=current_user.id)
+        db.commit()
+        raise HTTPException(status_code=400, detail="That code is not valid.")
+
+    current_user.mfa_enabled = False
+    current_user.mfa_secret_encrypted = None
+    current_user.mfa_recovery_codes = None
+    current_user.mfa_enrolled_at = None
+    db.commit()
+
+    log_action(db, current_user.username, "mfa_disabled", "MFA disabled",
+               organization_id=current_user.organization_id,
+               entity_type="User", entity_id=current_user.id)
+    db.commit()
+
+    return {"mfa_enabled": False}
+
+
+@app.get("/auth/mfa/status", tags=["Auth"])
+def mfa_status(current_user: User = Depends(get_current_user)):
+    """MFA state for the current account, including what is not yet enforced."""
+    import json as _json
+
+    remaining = 0
+    if current_user.mfa_recovery_codes:
+        try:
+            remaining = len(_json.loads(current_user.mfa_recovery_codes))
+        except _json.JSONDecodeError:
+            remaining = 0
+
+    return {
+        "mfa_enabled": bool(current_user.mfa_enabled),
+        "enrolled_at": current_user.mfa_enrolled_at.isoformat()
+                       if current_user.mfa_enrolled_at else None,
+        "recovery_codes_remaining": remaining,
+        "enforced_at_login": False,
+        "limitation": ("Enrolment works; enforcement at login is not implemented. "
+                       "A lockout recovery channel is required first."),
+    }
+
 # Serve the frontend. Must be last — it catches all routes not claimed above.
 app.mount("/", StaticFiles(directory="frontend", html=True), name="frontend")
 

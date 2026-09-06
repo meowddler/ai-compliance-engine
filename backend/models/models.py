@@ -192,6 +192,13 @@ class User(Base):
     role = Column(String, nullable=False)       # see Roles above
     is_active = Column(Boolean, default=True, nullable=False)
 
+    # MFA. The secret is stored encrypted: a database dump must not yield a
+    # working second factor, which would defeat the point of having one.
+    mfa_enabled = Column(Boolean, default=False, nullable=False)
+    mfa_secret_encrypted = Column(Text, nullable=True)
+    mfa_enrolled_at = Column(DateTime(timezone=True), nullable=True)
+    mfa_recovery_codes = Column(Text, nullable=True)   # JSON list of bcrypt hashes
+
 
 class AuditLog(Base):
     """Append-only, hash-chained record of state-changing actions.
