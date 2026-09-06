@@ -17,7 +17,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from backend.utils.report_generator import generate_compliance_report
 from backend.utils.audit import log_action
-from backend.config import CORS_ORIGINS, EVIDENCE_FRESHNESS_DAYS, ACCESS_TOKEN_EXPIRE_MINUTES
+from backend.config import (ACCESS_TOKEN_EXPIRE_MINUTES, CORS_ORIGINS, EVIDENCE_FRESHNESS_DAYS,MAX_UPLOAD_BYTES, MAX_UPLOAD_ROWS,)
 from fastapi.staticfiles import StaticFiles
 from datetime import datetime, timezone
 from backend.ai.service import explain_finding
@@ -25,6 +25,9 @@ from pydantic import BaseModel
 from backend.models.models import PostureSnapshot
 from backend.core.permissions import Capability, require_capability
 import anyio
+from slowapi import _rate_limit_exceeded_handler
+from slowapi.errors import RateLimitExceeded
+from backend.core.ratelimit import (LIMIT_AI, LIMIT_AUTH, LIMIT_WRITE, limiter,)
 
 TAGS_METADATA = [
     {"name": "Auth", "description": "Login and token issue."},
@@ -45,6 +48,12 @@ app = FastAPI(
     version="0.4.0",
     openapi_tags=TAGS_METADATA,
 )
+
+# Rate limiting. Registered before other middleware so a flood is rejected as
+# early as possible rather than after doing work.
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+
 
 def evidence_freshness(collected_at):
     """Classify evidence age. Stale evidence should not count as current proof
@@ -69,8 +78,8 @@ def read_root():
 
 
 @app.post("/auth/login", tags=["Auth"])
-def login(request: Request, form_data: OAuth2PasswordRequestForm = Depends(),
-          db: Session = Depends(get_db)):
+@limiter.limit(LIMIT_AUTH)
+def login(request: Request, form_data: OAuth2PasswordRequestForm = Depends(),db: Session = Depends(get_db)):
     user = db.query(User).filter(User.username == form_data.username).first()
     if not user or not verify_password(form_data.password, user.hashed_password):
         # 401, not a 200 with an error field, and the same message for both
@@ -129,9 +138,26 @@ def _write_evidence(path: str, data: bytes) -> None:
         fh.write(data)
 
 @app.post("/upload-logs", tags=["Scans"])
-async def upload_logs(file: UploadFile = File(...), db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+@limiter.limit(LIMIT_WRITE)
+async def upload_logs(request: Request, file: UploadFile = File(...), db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
     # --- Validate input up front, before creating anything in the DB. ---
-    contents = await file.read()
+    # Read in bounded chunks and stop at the limit. Reading the whole body first
+    # and checking its size afterwards would mean the memory was already spent.
+    chunks, total = [], 0
+    while True:
+        chunk = await file.read(1024 * 1024)
+        if not chunk:
+            break
+        total += len(chunk)
+        if total > MAX_UPLOAD_BYTES:
+            raise HTTPException(
+                status_code=413,
+                detail=(f"File exceeds the {MAX_UPLOAD_BYTES // (1024 * 1024)} MB limit. "
+                        f"Split it into smaller uploads."),
+            )
+        chunks.append(chunk)
+    contents = b"".join(chunks)
+
     if not contents:
         raise HTTPException(status_code=400, detail="Uploaded file is empty.")
 
@@ -142,6 +168,13 @@ async def upload_logs(file: UploadFile = File(...), db: Session = Depends(get_db
 
     if df.empty:
         raise HTTPException(status_code=400, detail="CSV contains no rows.")
+    if len(df) > MAX_UPLOAD_ROWS:
+        # A file can be small on disk and still produce an evaluation that runs
+        # for minutes: rows are multiplied by active rules.
+        raise HTTPException(
+            status_code=413,
+            detail=f"File has {len(df)} rows, exceeding the {MAX_UPLOAD_ROWS} row limit.",
+        )
     if "server_id" not in df.columns:
         raise HTTPException(status_code=400, detail="CSV must include a 'server_id' column.")
 
@@ -295,7 +328,8 @@ class DraftControlRequest(BaseModel):
 
 
 @app.post("/ai/draft-control", tags=["AI"])
-def ai_draft_control(req: DraftControlRequest, db: Session = Depends(get_db), current_user: User = Depends(require_role(["Admin"]))):
+@limiter.limit(LIMIT_AI)
+def ai_draft_control(request: Request, req: DraftControlRequest, db: Session = Depends(get_db), current_user: User = Depends(require_role(["Admin"]))):
     from backend.ai.service import draft_control
     available = ["server_id", "port", "port_exposed", "mfa_enabled", "last_login_days", "failed_logins"]
     return draft_control(db, requirement_text=req.requirement, available_fields=available, current_user=current_user)
@@ -342,7 +376,8 @@ def approve_draft(req: ApproveDraftRequest, db: Session = Depends(get_db), curre
     return db_rule
 
 @app.post("/violations/{violation_id}/explain", tags=["AI"])
-def explain_violation(violation_id: int, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+@limiter.limit(LIMIT_AI)
+def explain_violation(request: Request, violation_id: int, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
     v = db.query(Violation).filter(
         Violation.id == violation_id,
         Violation.organization_id == current_user.organization_id
@@ -1167,8 +1202,8 @@ class RefreshRequest(BaseModel):
 
 
 @app.post("/auth/refresh", tags=["Auth"])
-def refresh_access_token(req: RefreshRequest, request: Request,
-                         db: Session = Depends(get_db)):
+@limiter.limit(LIMIT_AUTH)
+def refresh_access_token(req: RefreshRequest, request: Request,db: Session = Depends(get_db)):
     """Exchange a refresh token for a new access token, rotating the refresh token."""
     from backend.core.tokens import consume_refresh_token, issue_refresh_token
 

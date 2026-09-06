@@ -124,3 +124,9 @@ if ENCRYPTION_KEYS and ENCRYPTION_ACTIVE_KEY_ID not in ENCRYPTION_KEYS:
         f"ENCRYPTION_ACTIVE_KEY_ID {ENCRYPTION_ACTIVE_KEY_ID!r} is not present in "
         f"ENCRYPTION_KEYS. Available: {', '.join(sorted(ENCRYPTION_KEYS)) or 'none'}"
     )
+
+
+# Upload limits. Reading an unbounded file into memory before validating it is
+# a denial-of-service vector: one large request can exhaust the process.
+MAX_UPLOAD_BYTES = _int("MAX_UPLOAD_BYTES", str(10 * 1024 * 1024))   # 10 MB
+MAX_UPLOAD_ROWS = _int("MAX_UPLOAD_ROWS", "100000")
