@@ -48,9 +48,11 @@ def identify_client(request: Request) -> str:
                 return f"org:{org}"
             if sub:
                 return f"user:{sub}"
-        except Exception:
-            # An invalid token gets limited by IP. It is about to be rejected
-            # anyway, and a bad token must not be a way to escape limiting.
+        except Exception:  # noqa: S110 - deliberate: see below
+            # Any token that cannot be decoded — expired, forged, malformed —
+            # falls through to IP-based limiting. Failing open here would let an
+            # attacker escape the limiter simply by sending a bad token, and the
+            # request is about to be rejected by authentication anyway.
             pass
 
     return f"ip:{get_remote_address(request)}"
