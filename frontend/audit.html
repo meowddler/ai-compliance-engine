@@ -82,7 +82,8 @@ async function loadAudit() {
   }
 
   try {
-    allAudit = await res.json();
+    const body = await res.json();
+    allAudit = body.items || body;
   } catch {
     messageRow(tbody, "The server returned an unreadable response.", 4);
     return;

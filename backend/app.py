@@ -28,6 +28,7 @@ import anyio
 from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 from backend.core.ratelimit import (LIMIT_AI, LIMIT_AUTH, LIMIT_WRITE, limiter,)
+from backend.utils.pagination import PageParams, paginate
 
 TAGS_METADATA = [
     {"name": "Auth", "description": "Login and token issue."},
@@ -391,8 +392,12 @@ def explain_violation(request: Request, violation_id: int, db: Session = Depends
     return explain_finding(db, violation=v, rule=rule, evidence=evidence, current_user=current_user)
 
 @app.get("/violations", tags=["Findings"])
-def get_violations(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
-    return db.query(Violation).filter(Violation.organization_id == current_user.organization_id).all()
+def get_violations(page: PageParams = Depends(), db: Session = Depends(get_db),
+                   current_user: User = Depends(get_current_user)):
+    query = (db.query(Violation)
+               .filter(Violation.organization_id == current_user.organization_id)
+               .order_by(Violation.id.desc()))
+    return paginate(query, page)
 
 
 class LifecycleUpdateRequest(BaseModel):
@@ -521,8 +526,12 @@ def get_violation_provenance(violation_id: int, db: Session = Depends(get_db), c
 
 
 @app.get("/scans", tags=["Scans"])
-def get_scans(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
-    return db.query(Scan).filter(Scan.organization_id == current_user.organization_id).all()
+def get_scans(page: PageParams = Depends(), db: Session = Depends(get_db),
+              current_user: User = Depends(get_current_user)):
+    query = (db.query(Scan)
+               .filter(Scan.organization_id == current_user.organization_id)
+               .order_by(Scan.id.desc()))
+    return paginate(query, page)
 
 @app.get("/scans/{scan_id}/evidence", tags=["Evidence"])
 def get_scan_evidence(scan_id: int, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
@@ -793,13 +802,13 @@ def generate_report(db: Session = Depends(get_db), current_user: User = Depends(
 
 
 @app.get("/audit-log", tags=["Audit"])
-def get_audit_log(db: Session = Depends(get_db), current_user: User = Depends(require_role(["Admin", "Auditor"]))):
+def get_audit_log(page: PageParams = Depends(), db: Session = Depends(get_db),
+                  current_user: User = Depends(require_capability(Capability.AUDIT_READ))):
     # Tenant-scoped: an auditor must never see another organisation's activity.
-    return (db.query(AuditLog)
-              .filter(AuditLog.organization_id == current_user.organization_id)
-              .order_by(AuditLog.timestamp.desc())
-              .limit(500)
-              .all())
+    query = (db.query(AuditLog)
+               .filter(AuditLog.organization_id == current_user.organization_id)
+               .order_by(AuditLog.timestamp.desc()))
+    return paginate(query, page)
 
 
 @app.delete("/rules/{rule_id}", tags=["Rules"])

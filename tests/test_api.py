@@ -71,7 +71,8 @@ def test_audit_endpoints_reject_anonymous():
 def test_traceability_returns_all_eleven_questions():
     """All eleven questions must be present, answered or explicitly not."""
     headers = _auth()
-    violations = client.get("/violations", headers=headers).json()
+    body = client.get("/violations", headers=headers).json()
+    violations = body["items"] if isinstance(body, dict) and "items" in body else body
     if not violations:
         return                                  # nothing scanned in this environment
     vid = violations[0]["id"]
@@ -279,3 +280,46 @@ def test_logout_revokes_all_refresh_tokens():
 
     assert client.post("/auth/logout", headers=headers).status_code == 200
     assert client.post("/auth/refresh", json={"refresh_token": refresh}).status_code == 401
+
+
+
+
+# --- Pagination -----------------------------------------------------------
+
+def test_list_endpoints_are_paginated():
+    """Unbounded lists work in development and time out in production."""
+    headers = _auth()
+    for path in ("/violations", "/scans", "/audit-log"):
+        body = client.get(path, headers=headers).json()
+        assert "items" in body and "pagination" in body, path
+        p = body["pagination"]
+        assert p["page"] == 1
+        assert len(body["items"]) <= p["page_size"]
+
+
+def test_page_size_is_capped_server_side():
+    """A client asking for a million rows is mistaken or hostile; either way the
+    server should not comply."""
+    r = client.get("/violations?page_size=999999", headers=_auth())
+    assert r.status_code == 422
+
+
+def test_pagination_navigates_correctly():
+    headers = _auth()
+    first = client.get("/violations?page=1&page_size=2", headers=headers).json()
+    if first["pagination"]["total_items"] < 3:
+        return                                  # not enough data to paginate
+
+    assert first["pagination"]["has_previous"] is False
+    assert first["pagination"]["has_next"] is True
+
+    second = client.get("/violations?page=2&page_size=2", headers=headers).json()
+    assert second["pagination"]["has_previous"] is True
+    # Distinct pages must return distinct rows.
+    assert {i["id"] for i in first["items"]} != {i["id"] for i in second["items"]}
+
+
+def test_invalid_page_numbers_are_rejected():
+    headers = _auth()
+    assert client.get("/violations?page=0", headers=headers).status_code == 422
+    assert client.get("/violations?page=-1", headers=headers).status_code == 422

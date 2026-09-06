@@ -20,14 +20,25 @@ ORG_NAMES = ["Org A Test", "Org B Test"]
 USER_NAMES = ["admin_a_test", "admin_b_test"]
 
 
+def items(response):
+    """Unwrap a paginated payload.
+
+    List endpoints return {items, pagination}. The fallback keeps these
+    assertions working for endpoints that are not paginated, so the tests
+    describe the isolation guarantee rather than the response envelope.
+    """
+    body = response.json()
+    return body["items"] if isinstance(body, dict) and "items" in body else body
+
+
 def _purge_test_orgs(db):
     """Remove the fixture's orgs and everything referencing them.
 
-    Order matters: children before parents. Logging in now writes an audit
-    entry AND a refresh token, so both reference the org or its users. A
-    teardown that misses one fails on a foreign key, leaves the org behind, and
-    breaks every subsequent test with a duplicate-name error — which is exactly
-    what happened when refresh tokens were introduced.
+    Order matters: children before parents. Logging in writes an audit entry
+    AND a refresh token, so both reference the org or its users. A teardown
+    that misses one fails on a foreign key, leaves the org behind, and breaks
+    every subsequent test with a duplicate-name error — which is exactly what
+    happened when refresh tokens were introduced.
     """
     orgs = db.query(Organization).filter(Organization.name.in_(ORG_NAMES)).all()
     for org in orgs:
@@ -99,29 +110,29 @@ def _headers(username, password):
 def test_org_b_cannot_see_org_a_scans(two_orgs):
     r = client.get("/scans", headers=_headers("admin_b_test", "pw_b"))
     assert r.status_code == 200
-    assert "org_a_scan.csv" not in [s["filename"] for s in r.json()]
+    assert "org_a_scan.csv" not in [s["filename"] for s in items(r)]
 
 
 def test_org_b_cannot_see_org_a_violations(two_orgs):
     r = client.get("/violations", headers=_headers("admin_b_test", "pw_b"))
     assert r.status_code == 200
-    assert "srv-a" not in [v["server_id"] for v in r.json()]
+    assert "srv-a" not in [v["server_id"] for v in items(r)]
 
 
 def test_org_b_cannot_see_org_a_rules(two_orgs):
     r = client.get("/rules", headers=_headers("admin_b_test", "pw_b"))
     assert r.status_code == 200
-    assert "rule_a_test" not in [rule["name"] for rule in r.json()]
+    assert "rule_a_test" not in [rule["name"] for rule in items(r)]
 
 
 def test_org_a_CAN_see_its_own_data(two_orgs):
     headers = _headers("admin_a_test", "pw_a")
 
     r = client.get("/scans", headers=headers)
-    assert "org_a_scan.csv" in [s["filename"] for s in r.json()]
+    assert "org_a_scan.csv" in [s["filename"] for s in items(r)]
 
     r = client.get("/violations", headers=headers)
-    assert "srv-a" in [v["server_id"] for v in r.json()]
+    assert "srv-a" in [v["server_id"] for v in items(r)]
 
 
 def test_org_b_dashboard_excludes_org_a(two_orgs):
@@ -138,7 +149,7 @@ def test_org_b_cannot_read_org_a_audit_log(two_orgs):
 
     r = client.get("/audit-log", headers=_headers("admin_b_test", "pw_b"))
     assert r.status_code == 200
-    assert "admin_a_test" not in [e["username"] for e in r.json()]
+    assert "admin_a_test" not in [e["username"] for e in items(r)]
 
 
 def test_org_b_cannot_verify_org_a_audit_chain(two_orgs):

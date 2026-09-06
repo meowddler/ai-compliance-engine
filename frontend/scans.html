@@ -100,14 +100,20 @@ async function loadScans() {
   try {
     // apiFetch throws on an expired session or timeout. Unhandled, that leaves
     // the table permanently empty with only a console error to explain it.
-    const res = await apiFetch("/scans");
+    const res = await apiFetch("/scans?page_size=100");
     if (!res.ok) throw new Error(`server returned ${res.status}`);
-    allScans = await res.json();
+    const scanBody = await res.json();
+    // Endpoints are paginated; the payload is {items, pagination}.
+    allScans = scanBody.items || scanBody;
     renderScans(allScans);
 
-    const vRes = await apiFetch("/violations");
+    // Findings are fetched at a larger page size because the detail view
+    // filters them client-side by scan. Server-side filtering by scan_id would
+    // be the better design once the volume justifies it.
+    const vRes = await apiFetch("/violations?page_size=500");
     if (!vRes.ok) throw new Error(`server returned ${vRes.status}`);
-    allViolations = await vRes.json();
+    const vBody = await vRes.json();
+    allViolations = vBody.items || vBody;
   } catch (err) {
     tbody.innerHTML = "";
     const tr = document.createElement("tr");
