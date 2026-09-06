@@ -1545,5 +1545,251 @@ def get_version():
     """Publish the versioning contract, including any pending deprecations."""
     return version_info()
 
+# --- Admin tooling ---------------------------------------------------------
+
+class CreateOrgRequest(BaseModel):
+    name: str
+
+
+class ImpersonateRequest(BaseModel):
+    target_username: str
+    reason: str
+    ticket_reference: str | None = None
+    duration_minutes: int = 30
+
+
+@app.get("/admin/organizations", tags=["System"])
+def list_organizations(db: Session = Depends(get_db),
+                       current_user: User = Depends(require_capability(Capability.ORGANIZATION_MANAGE))):
+    """Organisations visible to this operator.
+
+    Scoped to the caller's own organisation. A tenant administrator managing
+    every tenant would defeat the isolation the rest of the system enforces —
+    cross-tenant administration belongs to a separate operator role that does
+    not exist yet.
+    """
+    from sqlalchemy import func
+
+    from backend.models.models import Organization
+
+    orgs = db.query(Organization).filter(
+        Organization.id == current_user.organization_id).all()
+
+    return [{
+        "id": o.id,
+        "name": o.name,
+        "created_at": o.created_at.isoformat() if o.created_at else None,
+        "users": db.query(func.count(User.id)).filter(
+            User.organization_id == o.id).scalar() or 0,
+        "active_users": db.query(func.count(User.id)).filter(
+            User.organization_id == o.id, User.is_active.is_(True)).scalar() or 0,
+    } for o in orgs]
+
+
+@app.get("/admin/users", tags=["System"])
+def list_users(db: Session = Depends(get_db),
+               current_user: User = Depends(require_capability(Capability.USER_MANAGE))):
+    """Users in the caller's organisation. Password hashes are never returned."""
+    users = db.query(User).filter(
+        User.organization_id == current_user.organization_id).order_by(User.id).all()
+
+    return [{
+        "id": u.id,
+        "username": u.username,
+        "role": u.role,
+        "is_active": bool(u.is_active),
+        "mfa_enabled": bool(u.mfa_enabled),
+    } for u in users]
+
+
+@app.post("/admin/users/{user_id}/deactivate", tags=["System"])
+def deactivate_user(user_id: int, db: Session = Depends(get_db),
+                    current_user: User = Depends(require_capability(Capability.USER_MANAGE))):
+    """Disable an account and revoke its sessions.
+
+    Deactivation without session revocation would leave the user working until
+    their token expired, which is not what "disabled" means to anyone asking
+    for it.
+    """
+    from backend.core.tokens import revoke_all_for_user
+
+    target = db.query(User).filter(
+        User.id == user_id,
+        User.organization_id == current_user.organization_id).first()
+    if not target:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    if target.id == current_user.id:
+        # Self-deactivation locks the operator out and, if they are the only
+        # administrator, locks the organisation out permanently.
+        raise HTTPException(status_code=409, detail="You cannot deactivate your own account.")
+
+    target.is_active = False
+    revoked = revoke_all_for_user(db, target, "Account deactivated by an administrator.")
+    db.commit()
+
+    log_action(db, current_user.username, "user_deactivated",
+               f"Deactivated {target.username}; revoked {revoked} session(s)",
+               organization_id=current_user.organization_id,
+               entity_type="User", entity_id=target.id,
+               before={"is_active": True}, after={"is_active": False})
+    db.commit()
+
+    return {"user_id": target.id, "is_active": False, "sessions_revoked": revoked}
+
+
+@app.get("/admin/usage", tags=["System"])
+def usage_metering(db: Session = Depends(get_db),
+                   current_user: User = Depends(require_capability(Capability.ORGANIZATION_MANAGE))):
+    """Consumption figures for the caller's organisation.
+
+    Reports the units a usage-based plan would bill on, and states plainly that
+    no cost model is attached — inventing a price here would be fiction.
+    """
+    from backend.core.metrics import business_metrics
+
+    metrics = business_metrics(db, current_user.organization_id)
+
+    return {
+        "organization_id": current_user.organization_id,
+        "billable_units": {
+            "scans_run": metrics["scans"]["total"],
+            "evidence_records": metrics["evidence"]["records"],
+            "evidence_bytes": metrics["evidence"]["bytes_stored"],
+            "ai_calls": metrics["ai"]["calls"],
+            "ai_prompt_tokens": metrics["ai"]["prompt_tokens"],
+            "ai_completion_tokens": metrics["ai"]["completion_tokens"],
+            "active_controls": metrics["controls"]["active"],
+        },
+        "note": ("Consumption only. No pricing or cost model is attached, and "
+                 "these figures are not reconciled against a provider invoice."),
+    }
+
+
+@app.post("/admin/impersonate", tags=["System"])
+def start_impersonation(req: ImpersonateRequest, db: Session = Depends(get_db),
+                        current_user: User = Depends(require_capability(Capability.USER_MANAGE))):
+    """Begin a support impersonation session.
+
+    Deliberate privilege escalation, so it is constrained rather than
+    convenient: a reason is required, the session is time-bounded, the issued
+    token records who is really acting, and the whole thing is audited under
+    the operator's own name.
+    """
+    from datetime import timedelta
+
+    from backend.models.models import ImpersonationSession
+
+    if not req.reason or len(req.reason.strip()) < 10:
+        # A one-word reason is not a reason. Requiring substance makes the audit
+        # entry useful to whoever reads it later.
+        raise HTTPException(
+            status_code=400,
+            detail="A substantive reason is required (at least 10 characters).")
+
+    duration = max(5, min(req.duration_minutes, 120))   # bounded either way
+
+    target = db.query(User).filter(
+        User.username == req.target_username,
+        User.organization_id == current_user.organization_id).first()
+    if not target:
+        raise HTTPException(status_code=404, detail="Target user not found")
+    if target.id == current_user.id:
+        raise HTTPException(status_code=400, detail="You are already yourself.")
+
+    session = ImpersonationSession(
+        actor_username=current_user.username,
+        target_user_id=target.id,
+        target_username=target.username,
+        organization_id=current_user.organization_id,
+        reason=req.reason.strip(),
+        ticket_reference=req.ticket_reference,
+        expires_at=datetime.now(timezone.utc) + timedelta(minutes=duration),
+    )
+    db.add(session)
+    db.commit()
+    db.refresh(session)
+
+    # The token carries `act` — the real actor — so anything done during the
+    # session remains attributable to the operator, not the impersonated user.
+    token = create_access_token({
+        "sub": target.username,
+        "role": target.role,
+        "org": target.organization_id,
+        "act": current_user.username,
+        "imp": session.id,
+    })
+
+    log_action(db, current_user.username, "impersonation_started",
+               f"Impersonating {target.username} for {duration} minutes: {req.reason.strip()}",
+               organization_id=current_user.organization_id,
+               entity_type="ImpersonationSession", entity_id=session.id,
+               reason=req.reason.strip())
+    db.commit()
+
+    return {
+        "session_id": session.id,
+        "access_token": token,
+        "acting_as": target.username,
+        "real_actor": current_user.username,
+        "expires_at": session.expires_at.isoformat(),
+        "warning": "Every action taken with this token is attributed to you, not the user.",
+    }
+
+
+@app.post("/admin/impersonate/{session_id}/end", tags=["System"])
+def end_impersonation(session_id: int, db: Session = Depends(get_db),
+                      current_user: User = Depends(require_capability(Capability.USER_MANAGE))):
+    """End an impersonation session explicitly rather than waiting for expiry."""
+    from backend.models.models import ImpersonationSession
+
+    session = db.query(ImpersonationSession).filter(
+        ImpersonationSession.id == session_id,
+        ImpersonationSession.organization_id == current_user.organization_id).first()
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+    if session.ended_at:
+        raise HTTPException(status_code=409, detail="Session has already ended")
+
+    session.ended_at = datetime.now(timezone.utc)
+    session.ended_reason = "Ended by operator"
+    db.commit()
+
+    log_action(db, current_user.username, "impersonation_ended",
+               f"Ended impersonation of {session.target_username}",
+               organization_id=current_user.organization_id,
+               entity_type="ImpersonationSession", entity_id=session.id)
+    db.commit()
+
+    return {"session_id": session.id, "ended_at": session.ended_at.isoformat()}
+
+
+@app.get("/admin/impersonation-log", tags=["Audit"])
+def impersonation_log(db: Session = Depends(get_db),
+                      current_user: User = Depends(require_capability(Capability.AUDIT_READ))):
+    """Every impersonation session, active or ended.
+
+    Readable by auditors, not only by the operators who perform it — a support
+    feature that its own organisation cannot review is a backdoor.
+    """
+    from backend.models.models import ImpersonationSession
+
+    sessions = (db.query(ImpersonationSession)
+                  .filter(ImpersonationSession.organization_id == current_user.organization_id)
+                  .order_by(ImpersonationSession.started_at.desc())
+                  .limit(200).all())
+
+    return [{
+        "id": s.id,
+        "actor": s.actor_username,
+        "target": s.target_username,
+        "reason": s.reason,
+        "ticket": s.ticket_reference,
+        "started_at": s.started_at.isoformat() if s.started_at else None,
+        "expires_at": s.expires_at.isoformat() if s.expires_at else None,
+        "ended_at": s.ended_at.isoformat() if s.ended_at else None,
+        "active": s.ended_at is None,
+    } for s in sessions]
+
 # Serve the frontend. Must be last — it catches all routes not claimed above.
 app.mount("/", StaticFiles(directory="frontend", html=True), name="frontend")

@@ -434,3 +434,28 @@ class LegalHold(Base):
     placed_at = Column(DateTime(timezone=True), default=utcnow)
     released_by = Column(String, nullable=True)
     released_at = Column(DateTime(timezone=True), nullable=True)
+
+
+class ImpersonationSession(Base):
+    """A support session where one user acts as another.
+
+    Impersonation is deliberate privilege escalation, so it is recorded as a
+    first-class object rather than left implicit in a token. Every session has
+    a stated reason, a bounded lifetime, and an explicit end — the audit trail
+    around impersonation matters more than the convenience it provides.
+    """
+    __tablename__ = "impersonation_sessions"
+
+    id = Column(Integer, primary_key=True, index=True)
+    actor_username = Column(String, index=True)      # who is impersonating
+    target_user_id = Column(Integer, ForeignKey("users.id"), index=True)
+    target_username = Column(String, index=True)
+    organization_id = Column(Integer, ForeignKey("organizations.id"), index=True, nullable=True)
+
+    reason = Column(Text, nullable=False)            # required, never optional
+    ticket_reference = Column(String, nullable=True)
+
+    started_at = Column(DateTime(timezone=True), default=utcnow, index=True)
+    expires_at = Column(DateTime(timezone=True))
+    ended_at = Column(DateTime(timezone=True), nullable=True)
+    ended_reason = Column(String, nullable=True)
