@@ -31,6 +31,7 @@ from backend.core.ratelimit import (LIMIT_AI, LIMIT_AUTH, LIMIT_WRITE, limiter,)
 from backend.utils.pagination import PageParams, paginate
 from backend.core.logging_config import configure_logging
 from backend.core.middleware import CorrelationMiddleware
+from backend.core.versioning import CURRENT_VERSION, version_info
 
 TAGS_METADATA = [
     {"name": "Auth", "description": "Login and token issue."},
@@ -47,8 +48,13 @@ TAGS_METADATA = [
 
 app = FastAPI(
     title="AI Compliance Engine",
-    description="Evidence-driven compliance evaluation with deterministic controls and an AI assistance layer.",
-    version="0.4.0",
+    description=(
+        "Evidence-driven compliance evaluation with deterministic controls and "
+        "an AI assistance layer.\n\n"
+        "**API version:** v1. Unversioned paths resolve to v1. See `/version` "
+        "for the deprecation policy."
+    ),
+    version=f"1.0.0-{CURRENT_VERSION}",
     openapi_tags=TAGS_METADATA,
 )
 
@@ -1534,6 +1540,10 @@ def get_metrics(db: Session = Depends(get_db),
         "business": business_metrics(db, current_user.organization_id),
     }
 
+@app.get("/version", tags=["System"])
+def get_version():
+    """Publish the versioning contract, including any pending deprecations."""
+    return version_info()
 
 # Serve the frontend. Must be last — it catches all routes not claimed above.
 app.mount("/", StaticFiles(directory="frontend", html=True), name="frontend")

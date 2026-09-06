@@ -8,6 +8,11 @@ from backend.core.logging_config import correlation_id, get_logger, new_correlat
 
 from backend.core.metrics import record_request
 
+# Deprecations are declared here rather than scattered across endpoints.
+# NOTE: entries need `from datetime import date` — removed while the map is
+# empty, since an unused import is itself a lint failure.
+from backend.core.versioning import CURRENT_VERSION, deprecation_headers
+
 logger = get_logger("request")
 
 # Endpoints whose bodies contain credentials. Their paths are logged; nothing
@@ -35,6 +40,11 @@ class CorrelationMiddleware(BaseHTTPMiddleware):
             response = await call_next(request)
             status = response.status_code
             response.headers["X-Correlation-ID"] = cid
+            response.headers["X-API-Version"] = CURRENT_VERSION
+            # Machine-readable deprecation notice, so a client's monitoring can
+            # flag an impending removal without anyone reading a changelog.
+            for key, value in deprecation_headers(request.url.path).items():
+                response.headers[key] = value
             return response
         finally:
             duration_ms = round((time.perf_counter() - started) * 1000, 1)

@@ -323,3 +323,27 @@ def test_invalid_page_numbers_are_rejected():
     headers = _auth()
     assert client.get("/violations?page=0", headers=headers).status_code == 422
     assert client.get("/violations?page=-1", headers=headers).status_code == 422
+
+
+
+
+# --- API versioning -------------------------------------------------------
+
+def test_version_endpoint_publishes_the_contract():
+    """The versioning policy is published rather than assumed, so an integrator
+    can see what counts as a breaking change before one happens."""
+    body = client.get("/version").json()
+    assert body["current_version"] == "v1"
+    assert "policy" in body
+    assert body["policy"]["minimum_deprecation_notice_days"] >= 90
+    assert body["policy"]["breaking_change_definition"]
+
+
+def test_responses_declare_their_api_version():
+    r = client.get("/")
+    assert r.headers.get("x-api-version") == "v1"
+
+
+def test_version_endpoint_is_public():
+    """A client needs to discover the version before it can authenticate."""
+    assert client.get("/version").status_code == 200
