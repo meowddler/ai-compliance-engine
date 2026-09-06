@@ -43,7 +43,9 @@ ignore = [
 [lint.per-file-ignores]
 # Tests use fixed credentials against a disposable database, import inside
 # functions to exercise import-time behaviour, and build malformed input.
-"tests/*" = ["S105", "S106", "S107", "F401", "F811", "B017"]
+# Test data uses `random` for reproducible fixtures, not for anything requiring
+# cryptographic strength.
+"tests/*" = ["S105", "S106", "S107", "F401", "F811", "B017", "S311"]
 # Development passwords, overridable by environment variables.
 "backend/seed_users.py" = ["S105", "S106"]
 # "PASS" is an evaluation status, not a credential.

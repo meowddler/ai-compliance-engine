@@ -8,3 +8,6 @@ evidence_store/
 .vscode/
 .idea/
 *.log
+.coverage
+.coverage.*
+htmlcov/
