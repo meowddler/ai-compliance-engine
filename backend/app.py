@@ -29,6 +29,8 @@ from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 from backend.core.ratelimit import (LIMIT_AI, LIMIT_AUTH, LIMIT_WRITE, limiter,)
 from backend.utils.pagination import PageParams, paginate
+from backend.core.logging_config import configure_logging
+from backend.core.middleware import CorrelationMiddleware
 
 TAGS_METADATA = [
     {"name": "Auth", "description": "Login and token issue."},
@@ -49,6 +51,11 @@ app = FastAPI(
     version="0.4.0",
     openapi_tags=TAGS_METADATA,
 )
+
+# Structured logging first, so anything logged during startup is captured in
+# the same format as request logs.
+configure_logging()
+app.add_middleware(CorrelationMiddleware)
 
 # Rate limiting. Registered before other middleware so a flood is rejected as
 # early as possible rather than after doing work.
