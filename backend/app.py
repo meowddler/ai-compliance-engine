@@ -686,7 +686,7 @@ def update_rule(rule_id: int, rule: RuleUpdate, db: Session = Depends(get_db), c
     if not db_rule:
         raise HTTPException(status_code=404, detail="Rule not found")
 
-    update_data = rule.dict(exclude_unset=True)
+    update_data = rule.model_dump(exclude_unset=True)
     if "condition" in update_data:
         update_data["condition"] = json.dumps(rule.condition)
 
