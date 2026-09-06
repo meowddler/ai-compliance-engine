@@ -459,3 +459,42 @@ class ImpersonationSession(Base):
     expires_at = Column(DateTime(timezone=True))
     ended_at = Column(DateTime(timezone=True), nullable=True)
     ended_reason = Column(String, nullable=True)
+
+class Job(Base):
+    """A unit of background work.
+
+    Postgres-backed rather than Redis: the roadmap permits either, and a queue
+    in the database a system already depends on avoids adding a second piece of
+    infrastructure that can fail independently. It trades throughput for
+    operational simplicity, which is the right trade at this scale.
+
+    Status transitions are one-way: QUEUED -> RUNNING -> SUCCEEDED | FAILED.
+    A job is claimed atomically so two workers cannot run the same one.
+    """
+    __tablename__ = "jobs"
+
+    id = Column(Integer, primary_key=True, index=True)
+    organization_id = Column(Integer, ForeignKey("organizations.id"), index=True, nullable=True)
+
+    job_type = Column(String, index=True)          # e.g. "evaluate_scan"
+    status = Column(String, default="QUEUED", index=True)
+    payload = Column(Text)                         # JSON arguments
+    result = Column(Text, nullable=True)           # JSON outcome
+    error = Column(Text, nullable=True)
+
+    # Claimed by a worker. Without this two workers double-process a job.
+    claimed_at = Column(DateTime(timezone=True), nullable=True)
+    claimed_by = Column(String, nullable=True)
+
+    attempts = Column(Integer, default=0, nullable=False)
+    max_attempts = Column(Integer, default=3, nullable=False)
+
+    requested_by = Column(String)
+    created_at = Column(DateTime(timezone=True), default=utcnow, index=True)
+    started_at = Column(DateTime(timezone=True), nullable=True)
+    finished_at = Column(DateTime(timezone=True), nullable=True)
+
+    __table_args__ = (
+        # The claim query: oldest queued job for any org.
+        Index("ix_jobs_status_created", "status", "created_at"),
+    )

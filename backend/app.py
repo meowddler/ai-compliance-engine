@@ -35,6 +35,8 @@ from backend.core.versioning import CURRENT_VERSION, version_info
 from contextlib import asynccontextmanager
 from backend.core.scheduler import scheduler
 from backend.core.tasks import degrade_stale_evidence, verify_audit_chains
+from backend.core import job_handlers  # noqa: F401 - registers job handlers
+from backend.core.jobs import drain, enqueue, queue_stats
 
 TAGS_METADATA = [
     {"name": "Auth", "description": "Login and token issue."},
@@ -64,6 +66,14 @@ async def lifespan(app: FastAPI):
         # buys nothing and costs a full table scan each time.
         interval_seconds=3600,
     )
+    scheduler.register(
+        "drain_job_queue",
+        lambda: drain(limit=25),
+        # Frequent: the queue is how asynchronous work reaches a worker, and a
+        # long interval would make "background" mean "eventually".
+        interval_seconds=15,
+    )
+
     scheduler.register(
         "verify_audit_chains",
         verify_audit_chains,
@@ -1846,6 +1856,64 @@ def scheduler_status(current_user: User = Depends(require_capability(Capability.
     silently is worse than none — the work appears to be happening.
     """
     return scheduler.status()
+
+
+class EnqueueEvaluationRequest(BaseModel):
+    scan_id: int
+
+
+@app.post("/jobs/evaluate-scan", tags=["Scans"])
+def enqueue_scan_evaluation(req: EnqueueEvaluationRequest, db: Session = Depends(get_db),
+                            current_user: User = Depends(require_capability(Capability.EVIDENCE_INGEST))):
+    """Queue a scan for asynchronous evaluation.
+
+    Returns immediately with a job id. Evaluation of a large file scales with
+    rows multiplied by rules and can exceed any reasonable request timeout, so
+    it does not belong in the HTTP path.
+    """
+    scan = db.query(Scan).filter(
+        Scan.id == req.scan_id,
+        Scan.organization_id == current_user.organization_id).first()
+    if not scan:
+        raise HTTPException(status_code=404, detail="Scan not found")
+
+    job = enqueue(db, job_type="evaluate_scan", payload={"scan_id": scan.id},
+                  organization_id=current_user.organization_id,
+                  requested_by=current_user.username)
+    db.commit()
+    db.refresh(job)
+
+    return {"job_id": job.id, "status": job.status, "scan_id": scan.id,
+            "poll": f"/jobs/{job.id}"}
+
+
+@app.get("/jobs/{job_id}", tags=["Scans"])
+def get_job(job_id: int, db: Session = Depends(get_db),
+            current_user: User = Depends(get_current_user)):
+    """Job status and result."""
+    from backend.models.models import Job
+
+    job = db.query(Job).filter(
+        Job.id == job_id,
+        Job.organization_id == current_user.organization_id).first()
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+
+    return {
+        "id": job.id, "type": job.job_type, "status": job.status,
+        "attempts": job.attempts, "max_attempts": job.max_attempts,
+        "result": json.loads(job.result) if job.result else None,
+        "error": job.error,
+        "created_at": job.created_at.isoformat() if job.created_at else None,
+        "finished_at": job.finished_at.isoformat() if job.finished_at else None,
+    }
+
+
+@app.get("/jobs", tags=["Scans"])
+def job_queue_stats(db: Session = Depends(get_db),
+                    current_user: User = Depends(require_capability(Capability.AUDIT_READ))):
+    """Queue depth by status. A growing queued count is the backlog signal."""
+    return queue_stats(db, current_user.organization_id)
 
 # Serve the frontend. Must be last — it catches all routes not claimed above.
 app.mount("/", StaticFiles(directory="frontend", html=True), name="frontend")
